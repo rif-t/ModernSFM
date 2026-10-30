@@ -23,11 +23,24 @@ if(MSVC)
 endif()
 
 include(CTest)
-find_package(Python3 COMPONENTS Interpreter)
-if(BUILD_TESTING AND Python3_Interpreter_FOUND)
-    add_test(
-        NAME worker_smoke
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/worker_smoke.py"
-                "$<TARGET_FILE:modern_sfm_worker>"
+if(BUILD_TESTING)
+    add_executable(pfm_orientation_test
+        tests/pfm_orientation.cpp
+        src/worker/pfm.cpp
     )
+    target_include_directories(pfm_orientation_test PRIVATE include)
+    if(MSVC)
+        target_compile_options(pfm_orientation_test PRIVATE /W4 /permissive- /EHsc)
+        target_compile_definitions(pfm_orientation_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    endif()
+    add_test(NAME pfm_orientation COMMAND pfm_orientation_test)
+
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME worker_smoke
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/worker_smoke.py"
+                    "$<TARGET_FILE:modern_sfm_worker>"
+        )
+    endif()
 endif()

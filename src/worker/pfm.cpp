@@ -139,7 +139,9 @@ PfmImage read_pfm(const std::filesystem::path& path, std::uint64_t max_applicati
             throw std::runtime_error("short read in PFM payload: " + path.string());
         }
 
-        const std::uint32_t output_y = image.height - 1U - file_y;
+        // Source Filmmaker's PFM output places the top scanline first. Keep that
+        // order so the resulting EXR matches the rendered frame orientation.
+        const std::uint32_t output_y = file_y;
         const std::size_t output_offset = static_cast<std::size_t>(output_y) * image.width * channels;
         for (std::size_t i = 0; i < row_words.size(); ++i) {
             std::uint32_t bits = swap_bytes ? byte_swap(row_words[i]) : row_words[i];

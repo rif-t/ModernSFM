@@ -11,9 +11,9 @@ def write_pfm(path, magic, width, height, channels, values, scale=-1.0):
         stream.write((magic + "\n").encode("ascii"))
         stream.write(("%d %d\n" % (width, height)).encode("ascii"))
         stream.write(("%.1f\n" % scale).encode("ascii"))
-        # PFM stores rows bottom-to-top; the fixture values are top-to-bottom.
+        # Match the top-to-bottom row order observed in SFM's PFM output.
         row_size = width * channels
-        for y in range(height - 1, -1, -1):
+        for y in range(height):
             row = values[y * row_size:(y + 1) * row_size]
             stream.write(struct.pack("<%df" % len(row), *row))
 

@@ -24,7 +24,7 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 
 **Goal:** verify file-format handling without coupling it to SFM.
 
-**Status:** accepted synthetic-data subset implemented and verified. The x64 standalone Worker reads paired RGB (`PF`) beauty and single-channel (`Pf`) depth PFM inputs, writes FLOAT `raw-sfm`, `depth`, and `image-final` EXR channels, reopens the file, and checks dimensions, channel types, and pixel values. `image-final` is an identity copy of `raw-sfm`. Synthetic smoke tests cover valid inputs, truncated payload rejection, dimension mismatch, non-finite samples, memory-budget acceptance and rejection, output collision, and PFM retention. No real SFM PFM pair has been tested.
+**Status:** synthetic-data subset implemented and verified; one real SFM frame pair has also been processed. The x64 standalone Worker reads paired RGB (`PF`) beauty and single-channel (`Pf`) depth PFM inputs, preserves the top-to-bottom row order observed in that SFM output, writes FLOAT `raw-sfm`, `depth`, and `image-final` EXR channels, reopens the file, and checks dimensions, channel types, and pixel values. `image-final` is an identity copy of `raw-sfm`. Synthetic smoke tests cover valid inputs, row order, truncated payload rejection, dimension mismatch, non-finite samples, memory-budget acceptance and rejection, output collision, and PFM retention. Color and depth semantics remain unresolved.
 
 - Define synthetic PFM fixtures including valid RGB/grayscale and malformed headers/payloads.
 - Specify strict parser behavior for non-finite values, endian/scale, orientation, truncation, dimensions, and overflow.

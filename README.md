@@ -4,9 +4,9 @@ ModernSFM is a planned rendering and post-processing pipeline for Source Filmmak
 
 ## Project status
 
-The repository contains the architecture documents and a first standalone x64 Worker milestone. The Worker strictly parses a paired RGB beauty PFM and single-channel depth PFM, writes a multilayer FLOAT OpenEXR, reopens it, and checks channel types, dimensions, and sample values. The `image-final` layer is currently an identity copy of `raw-sfm`; no color-space interpretation is asserted. Source PFMs are preserved.
+The repository contains the architecture documents and a standalone x64 Worker milestone. The Worker strictly parses a paired RGB beauty PFM and single-channel depth PFM, writes a multilayer FLOAT OpenEXR, reopens it, and checks channel types, dimensions, and sample values. It keeps the top-to-bottom row order observed in an SFM render. The `image-final` layer is currently an identity copy of `raw-sfm`; no color-space interpretation is asserted. Source PFMs are preserved.
 
-This milestone has only been verified with synthetic fixtures. It does not include the x86 Bridge DLL, Python orchestration, SFM integration, color transforms, effects, batching, or cleanup. Real SFM PFM compatibility and color/depth semantics remain unverified.
+The Worker has passed synthetic tests and processed one real SFM frame pair. It does not include the x86 Bridge DLL, Python orchestration, SFM integration, color transforms, effects, batching, or cleanup. Color and depth semantics remain unverified.
 
 ## Build and verify
 
