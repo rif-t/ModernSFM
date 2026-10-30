@@ -58,14 +58,15 @@ The x64 Worker must never be loaded into SFM's x86 process. The Bridge is not th
 1. SFM starts the ModernSFM Python orchestration script.
 2. Python initializes the Bridge; the Bridge starts or connects to the x64 Worker.
 3. SFM renders beauty and depth PFM files.
-4. After render completion has been reliably established, Python submits paths and settings through the Bridge.
-5. The Bridge sends a job request over local IPC.
-6. The Worker validates both inputs, parses them, processes the data, and writes a temporary EXR.
-7. The Worker reopens and validates the EXR, then publishes the final output.
-8. The Worker sends a structured success/failure result through IPC; the Bridge returns it to Python.
-9. Input PFMs may be deleted only after validated output publication and according to the configured retention policy. On any error or interruption, source files remain available.
+4. Python sends a batch configuration through the Bridge, including an inclusive frame range and input/output naming patterns.
+5. As SFM renders each frame and Python determines its Beauty and Depth PFMs are ready, Python sends a frame-ready notification with the two paths. The reliability of this readiness determination remains unverified.
+6. The Bridge forwards only control data and paths over local IPC; the Worker reads the files directly.
+7. The Worker validates both inputs, parses them, processes the data, writes a temporary EXR, reopens and validates it, and publishes the final output.
+8. The Worker reports frame acceptance, start, completion, or failure; the Bridge returns statuses to Python.
+9. Python closes batch submission with a final outcome (normal end, cancellation, or render failure). The Worker reports batch completion only after submission is closed and every expected frame has a terminal state; missing frames become failures, never successes.
+10. Input PFMs may be deleted only after validated output publication and according to the configured retention policy. On any error or interruption, source files remain available.
 
-Step 4 is **unresolved** until SFM's render-completion behavior is established; the workflow must not infer completion from file existence or an arbitrary size-stability timeout.
+The frame-ready decision and batch-submission close signal are **proposed but unverified**. A special SFM hook is not assumed. Do not treat file existence alone as readiness; Worker validation remains defensive and cannot by itself prove SFM has closed a file or will not replace it. The exact Python-side readiness and normal-end detection mechanism must be tested before live integration.
 
 ## Python 2.7 native binding
 
@@ -78,7 +79,11 @@ Compatibility is not assumed. Verify interpreter version/bitness, DLL search beh
 
 ## Render completion and input readiness
 
-**Status: unresolved; no SFM completion API is asserted here.** A local inspection of `game/sdktools/python/global/Scripts` and `game/sdktools/python/global/lib/site-packages/sfm` found general Python utilities but did not establish a render-finished callback or reliable completion signal for beauty/depth PFM export. This limited search is not proof that no such API or engine behavior exists.
+**Confirmed:** the installed Python script search and inspection of the legacy frontend did not establish a documented SFM render-finished callback. The legacy frontend polls UI dialogs and expected output counts, but these are unverified heuristics. No live SFM test has established how Python can tell that a particular Beauty/Depth pair is fully written.
+
+**Proposed:** Python owns render sequencing and sends one `frame_ready` notification per pair after its readiness condition is met. No special callback or engine hook is added unless investigation proves one is needed. The Worker validates the pair and reports processing state, but does not infer readiness from existence alone.
+
+**Unresolved:** whether SFM's movie layoff writes each PFM pair synchronously before advancing, exposes a usable completion event, closes files before Python can observe the next frame, or can be monitored reliably without a hook. Also unresolved is how Python detects normal end-of-render versus cancellation/failure in order to close submissions accurately.
 
 ### Legacy local prototype (reference only)
 
@@ -91,7 +96,7 @@ The script combines render controls with a viewport bridge, has machine-specific
 Required investigation:
 
 - Inspect SFM's actual image-sequence/export UI and available Python/console interfaces.
-- Determine whether a supported SFM call returns only after all requested files are closed and flushed, and whether beauty and depth completion are reported together.
+- Determine whether a supported SFM call returns only after requested files are closed and flushed, whether beauty and depth completion are reported together, and whether Python can observe each frame boundary without a special hook.
 - Verify behavior during normal completion, user cancellation, SFM shutdown, and render/export error.
 - Record the observed completion contract and a repeatable pass/fail procedure before choosing the orchestration signal.
 - Use the legacy prototype only to identify prior intended controls and failure reports; do not copy its dialog-close sentinel as a success signal.
@@ -102,16 +107,48 @@ Required investigation:
 
 Before Bridge implementation, run a tiny x86 probe DLL with a version function and one integer/string call from a script executed in SFM's own Python console. Verify architecture, calling convention, Unicode path round-trip, error return, SFM responsiveness, and clean process shutdown. Do not use the failed legacy frontend as the probe.
 
-Until then, do not submit files based solely on existence or a fixed delay. Regardless of the completion signal, the Worker must reject malformed, truncated, mismatched, or unreadable inputs without modifying or deleting them.
+Until then, do not submit files based solely on existence or a fixed delay. Regardless of the handoff signal, the Worker must reject malformed, truncated, mismatched, or unreadable inputs without modifying or deleting them.
 
-## Batch processing (planned)
+## Batch frame-submission contract (proposed; not implemented)
 
-The Worker may later accept a frame-range job with input/output patterns, per-frame status, failure reporting, cancellation, validation, and resume support. Two strategies remain to be measured:
+The user configures one inclusive frame range. For example, `start_frame = 0` and `end_frame = 500` means 501 expected frames. A proposed batch-start message is:
+
+```json
+{
+  "type": "begin_batch",
+  "job_id": "render_001",
+  "start_frame": 0,
+  "end_frame": 500,
+  "beauty_pattern": "frame_%04d.pfm",
+  "depth_pattern": "depth_%04d.pfm",
+  "output_pattern": "frame_%04d.exr"
+}
+```
+
+The exact encoding and fields are not finalized. The range and patterns declare the expected work; they do not mean the Worker should treat file existence as a readiness signal. Python submits each rendered pair separately:
+
+```json
+{
+  "type": "frame_ready",
+  "job_id": "render_001",
+  "frame": 0,
+  "beauty_path": ".../frame_0000.pfm",
+  "depth_path": ".../depth_0000.pfm"
+}
+```
+
+The Worker first checks that the frame belongs to the declared range and that paths conform to policy, then validates both PFM files as readable, structurally valid, and dimension-matched. Only a validated submission is acknowledged as `accepted`; validation errors produce `failed`. The Worker owns subsequent per-frame processing state: `started`, `completed`, `failed`, or `cancelled`. Batch statuses are `completed`, `completed_with_errors`, and `cancelled`. A duplicate frame submission, retry, or already-produced output needs a defined idempotency policy before implementation.
+
+Python must send an explicit end-of-submissions outcome (`normal`, `cancelled`, or `failed`). Only after submissions are closed and every expected frame is terminal may the Worker report a terminal batch result. Frames never submitted by normal or failed close are recorded as missing/failed; frames left unprocessed by cancellation are marked cancelled. A user cancel should produce batch `cancelled`; it must not turn unfinished frames into successes. The exact message names and whether a partial batch can be resumed remain to be specified.
+
+This contract separates the responsibilities: Python sequences SFM rendering and submits paths; the Bridge owns Worker lifecycle and forwards control messages; the x64 Worker owns the expected frame set, validation, processing states, and batch result. Full image buffers do not cross IPC.
+
+The initial implementation should process frames sequentially to bound memory and simplify status/recovery. Parallel frame work remains a later optimization:
 
 - **Sequential batch:** one Worker processes frames one at a time. This is the preferred first batch design because it bounds memory and is simpler to resume.
 - **Parallel batch:** independent frames run concurrently in multiple Workers or threads. Do not assume it improves total time; profile CPU, memory, storage throughput, and per-frame working set first.
 
-Streaming a completed frame while SFM renders later frames is a possible optimization only after reliable per-frame render completion has been established. It must never read a partially written PFM. Batch manifests, frame naming, idempotent retries, and resume rules remain unresolved.
+Streaming a completed frame while SFM renders later frames is the proposed handoff model, but must wait until Python can reliably determine each pair is finished. The user-facing frame range is already the batch boundary; no extra render-completion hook is assumed. The readiness condition, submission-close trigger, idempotent retries, and resume rules remain unresolved. The Worker must never silently count a missing or invalid frame as successfully processed.
 
 ## PFM format and data semantics
 
@@ -272,7 +309,7 @@ Detailed sequencing and pass/fail gates are tracked in [ROADMAP.md](ROADMAP.md).
 ## Prioritized investigations before implementation
 
 1. Expand the one-frame sample set across scenes and render settings; the current pair's binary structure, range, and row orientation are documented, while color characteristics and depth semantics remain unresolved.
-2. Establish a real SFM render-completion signal and interruption behavior from inspected interfaces or controlled observation. This currently blocks reliable orchestration.
+2. Verify Python's per-frame Beauty/Depth readiness condition and its way to close submissions on normal completion, cancellation, or failure. Do not add an SFM hook unless experiments show it is necessary.
 3. Test native binding feasibility inside SFM's embedded Python 2.7; compare `ctypes` against a CPython extension and select one based on evidence.
 4. Finalize the EXR schema and precision/compression/metadata after input semantics are known.
 5. Specify the Named Pipe framing/protocol, Bridge API, Worker state transitions, deadlines, cancellation, and recovery.
@@ -283,7 +320,7 @@ Detailed sequencing and pass/fail gates are tracked in [ROADMAP.md](ROADMAP.md).
 
 - One SFM render produced a beauty/depth PFM pair with matching dimensions. Reliable pairing/completion behavior across exports and frames remains unverified.
 - The embedded SFM Python environment can load a separately built x86 Bridge through a supported binding mechanism.
-- A dependable completion signal is accessible to Python or the Bridge without a fragile file-stability heuristic.
+- Python can reliably identify completed Beauty/Depth pairs and distinguish normal submission close from cancellation or failure without an unnecessary SFM hook.
 - The Worker can locate and access the same paths visible to SFM, including Unicode/long paths where required.
 - Beauty and depth PFM semantics are sufficient for the proposed `raw-sfm`, `depth`, and processed `image-final` outputs.
 - AgX is applicable to a verified interpretation of the source values.
@@ -298,7 +335,7 @@ Detailed sequencing and pass/fail gates are tracked in [ROADMAP.md](ROADMAP.md).
 6. **Depth verification:** compare the EXR depth channel to source depth samples and confirm orientation/alignment; pass only when mapping is documented or the channel is explicitly marked semantically unknown.
 7. **Bridge-to-Worker IPC outside SFM:** submit/status/cancel/shutdown requests; pass only with version negotiation, bounded failures, structured errors, and no image-buffer IPC.
 8. **Native binding inside SFM:** load/call/unload or shut down the Bridge using the actual embedded Python; pass only when bitness, ABI, paths, error propagation, and SFM responsiveness are verified.
-9. **End-to-end SFM render-to-EXR:** pass only when a documented completion signal gates submission and the resulting EXR validates against its inputs.
+9. **End-to-end SFM render-to-EXR:** pass only when the verified Python readiness condition gates each submission, the batch is explicitly closed with the correct outcome, and each resulting EXR validates against its inputs.
 10. **Fault handling:** simulate truncated inputs, Worker crash/disconnect, timeout, cancellation, and SFM exit; pass only when SFM does not wait indefinitely, partial final output is not published, and source PFMs remain intact.
 11. **Resource/performance benchmark:** measure peak memory, CPU scaling, and SIMD against a scalar correctness baseline; pass only when the configured memory budget is respected and optimized output remains within the correctness criteria.
 

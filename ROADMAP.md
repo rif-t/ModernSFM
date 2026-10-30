@@ -14,7 +14,7 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 - Verify which PFM header/payload, channel, scale/endian, and row-orientation properties are stable across frames.
 - Establish beauty color characteristics and whether scene-linear interpretation is justified.
 - Establish depth encoding, range/units, background value, and alignment with beauty using the calibration tests in [Phase 0 Evidence](PHASE0_EVIDENCE.md).
-- Identify and verify an SFM render-completion signal; inspect actual workflow/API behavior without inventing undocumented APIs.
+- Investigate whether Python can reliably determine per-frame Beauty/Depth readiness and normal batch-end/cancel/failure without a special SFM hook.
 - Treat the installed `modern_sfm_frontend.py` as a user-confirmed non-working legacy prototype. Record useful behavior and reported failures, but cleanly rewrite render orchestration in this repository after its boundary is clear; do not port the mixed viewport implementation or edit the installed copy.
 - Test x86 native binding options inside this SFM installation's embedded Python 2.7; evaluate `ctypes` first and retain a CPython extension as alternative.
 - Approve initial EXR channels, precision, compression, metadata, and data/display windows.
@@ -22,7 +22,7 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 
 **Deferred by user:** Beauty color-space and depth-value calibration may remain open for the initial opaque PFM-to-EXR path. Preserve sample values unchanged and do not add semantic transforms or metadata. This deferral does not waive the need to establish that each input pair is complete and readable before processing.
 
-**Investigation update (2026-10-30):** The installed bundled Python executable reports CPython 2.7.5, 32-bit, imports `ctypes`, and can call a basic Win32 API. This is only a bundled-runtime baseline, not an in-SFM Bridge load test. Inspection of the non-working legacy frontend confirms it polls a Qt layoff progress dialog and/or expected output counts and writes a sentinel; neither has been verified against cancellation, failure, or file flushing. No reliable render-completion contract has been established. See [Architecture](ARCHITECTURE.md) for evidence and the required probe.
+**Investigation update (2026-10-30):** The installed bundled Python executable reports CPython 2.7.5, 32-bit, imports `ctypes`, and can call a basic Win32 API. This is only a bundled-runtime baseline, not an in-SFM Bridge load test. Inspection of the non-working legacy frontend confirms it polls a Qt layoff progress dialog and/or expected output counts and writes a sentinel; neither has been verified against cancellation, failure, or file flushing. No reliable per-frame readiness or batch-end contract has been established. The proposed model is per-frame `frame_ready` notifications from Python, with no special hook assumed, and an explicit end-of-submissions outcome. See [Architecture](ARCHITECTURE.md) for the proposed protocol and required investigation.
 
 **Gate:** implementation starts only after the architecture questions that affect component boundaries and input/output correctness are resolved. Unknown color/depth semantics may remain explicitly marked unknown rather than guessed.
 
@@ -47,6 +47,7 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 - Build the x86 Bridge and x64 Worker as separate binaries.
 - Exercise initialize, submit, status/progress, cancellation, errors, shutdown, Worker exit, protocol mismatch, and timeout behavior through IPC.
 - Verify one active job and control-message-only IPC; Worker reads image files directly.
+- Use a one-frame batch to validate the proposed `begin_batch` → `frame_ready` → frame status → end-of-submissions contract, including missing/invalid input handling.
 - Add separate logs and version/protocol diagnostics.
 
 **Gate:** all protocol and failure scenarios return bounded structured outcomes; the Worker is never loaded into the x86 process and no full image buffers cross IPC.
@@ -56,7 +57,7 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 **Goal:** complete one SFM render-to-EXR operation through embedded Python and the Bridge.
 
 - Load and call the x86 Bridge using the selected binding in SFM's actual Python environment.
-- Use the verified render-completion signal to gate submission.
+- Have Python submit a frame only after its readiness condition is met; the condition must be experimentally verified, and a special SFM hook is not assumed.
 - Process a real beauty/depth pair and compare source and EXR values.
 - Publish through a temporary output followed by reopen/validation and atomic/failure-safe final publication where supported.
 - Add configurable source retention; delete inputs only after validated publication.
@@ -67,10 +68,12 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 
 **Goal:** process animation outputs reliably before introducing concurrency.
 
-- Define frame-range manifests, file patterns, per-frame status, output ownership, retries, resume behavior, and cancellation.
+- Implement the proposed inclusive frame range and naming patterns; define duplicate submission, output ownership, retries, resume behavior, and cancellation.
+- Track `accepted` only after input validation, then `started`, `completed`, `failed`, and `cancelled` frame states in the Worker.
+- Require an explicit close-of-submissions outcome; mark unsubmitted expected frames missing/failed on normal/error close and cancelled on user cancel. Report `completed`, `completed_with_errors`, or `cancelled` only after expected frames are terminal.
 - Process one frame at a time to bound memory.
 - Report failed frames and validate every output before marking completion.
-- Evaluate streaming from SFM only after per-frame completion detection is reliable.
+- Stream frames from SFM only after the Python-side per-frame readiness condition is reliable; do not rely on file existence alone.
 
 **Gate:** an interrupted batch resumes without corrupting completed frames or deleting unprocessed inputs; frame ordering and naming are deterministic.
 
@@ -132,7 +135,7 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 
 ## Key unresolved risks
 
-1. A reliable supported SFM render-completion signal has not been established.
+1. Python's per-frame PFM readiness condition and normal-end/cancel/failure detection have not been established; a special SFM hook is not assumed.
 2. Only one real beauty/depth PFM pair has been inspected; beauty color/depth semantics remain unknown.
 3. A custom x86 Bridge DLL has not been loaded from SFM's live embedded Python 2.7; only basic `ctypes` availability in the bundled 32-bit Python executable is confirmed.
 4. The initial EXR schema and transform metadata remain proposals.
