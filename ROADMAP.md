@@ -13,6 +13,7 @@ This roadmap describes proposed phases. The repository currently contains docume
 - Establish beauty color characteristics and whether scene-linear interpretation is justified.
 - Establish depth encoding, range/units, background value, and alignment with beauty.
 - Identify and verify an SFM render-completion signal; inspect actual workflow/API behavior without inventing undocumented APIs.
+- Treat the installed `modern_sfm_frontend.py` as a user-confirmed non-working legacy prototype. Record useful behavior and reported failures, but cleanly rewrite render orchestration in this repository after its boundary is clear; do not port the mixed viewport implementation or edit the installed copy.
 - Test x86 native binding options inside this SFM installation's embedded Python 2.7; evaluate `ctypes` first and retain a CPython extension as alternative.
 - Approve initial EXR channels, precision, compression, metadata, and data/display windows.
 - Specify Bridge↔Worker IPC, API, timeouts, cancellation, and failure semantics.

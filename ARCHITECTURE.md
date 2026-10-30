@@ -80,12 +80,21 @@ Compatibility is not assumed. Verify interpreter version/bitness, DLL search beh
 
 **Status: unresolved; no SFM completion API is asserted here.** A local inspection of `game/sdktools/python/global/Scripts` and `game/sdktools/python/global/lib/site-packages/sfm` found general Python utilities but did not establish a render-finished callback or reliable completion signal for beauty/depth PFM export. This limited search is not proof that no such API or engine behavior exists.
 
+### Legacy local prototype (reference only)
+
+The SFM installation contains `game/usermod/scripts/sfm/mainmenu/modern_sfm_frontend.py`, an 88 KB legacy prototype. The project owner confirms this version does not work and prefers a clean rewrite. It is outside this Git repository and must not be edited in place or treated as the implementation source of truth.
+
+Read-only inspection shows that it configures SFM `movieSettings` for PFM output and optional depth, triggers the Export Movie UI, polls for a layoff progress dialog, and writes a `done.sentinel` when the dialog closes after being observed or when a frame count reaches the requested total. It also launches a configured `ModernSFM.exe --watch` through `rm_*` functions exposed by an x86 DLL. This is an existing prototype's behavior, not a verified SFM API contract. Dialog disappearance can also follow cancellation or failure, so the sentinel path is not sufficient evidence of successful render completion without further verification.
+
+The script combines render controls with a viewport bridge, has machine-specific absolute build paths, and references `render_manager.cpp`, an x86 DLL, and an x64 executable that were not present in the inspected ModernSFM project directory. No generated PFM samples or RAM ingest directory were found in the checked locations. The clean rewrite should live in the ModernSFM repository and target the agreed render pipeline first; viewport work stays out of scope unless separately approved.
+
 Required investigation:
 
 - Inspect SFM's actual image-sequence/export UI and available Python/console interfaces.
 - Determine whether a supported SFM call returns only after all requested files are closed and flushed, and whether beauty and depth completion are reported together.
 - Verify behavior during normal completion, user cancellation, SFM shutdown, and render/export error.
 - Record the observed completion contract and a repeatable pass/fail procedure before choosing the orchestration signal.
+- Use the legacy prototype only to identify prior intended controls and failure reports; do not copy its dialog-close sentinel as a success signal.
 
 Until then, do not submit files based solely on existence or a fixed delay. Regardless of the completion signal, the Worker must reject malformed, truncated, mismatched, or unreadable inputs without modifying or deleting them.
 
