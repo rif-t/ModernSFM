@@ -140,9 +140,17 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 - **Performance:** baseline and optimized CPU runs, peak memory, thread scaling, SIMD benefit, Worker concurrency, and later SFM instance scaling.
 - **Compatibility:** stock SFM first; test DXVK/ReShade configurations only after deterministic CPU processing works.
 
+## Render Job panel status (2026-10-30)
+
+On 2026-10-30, the user started a real job from the panel using `session5.dmx`, inclusive frames 0–2, and the verified 1280x720 preset. The panel opened a disposable session copy, configured the native Sequence Exporter with an exclusive end frame of 3, and exported three Beauty/Depth PFM pairs. Embedded Python checked matching 1280x720 headers; each pair was processed through the existing x86 Bridge and x64 Worker; all three EXRs passed Worker validation. The panel displayed `Completed: 3 EXR frame(s) validated`, and retained all six source PFMs.
+
+**Session safety and crash fix:** an earlier test crashed SFM when opening the disposable copy directly from the external job folder. The panel now stores an archival copy in the job folder and opens a second per-job copy from SFM's own `elements\\sessions` directory. The successful run verified this location. The original `session5.dmx` and the job's `session_copy.dmx` had matching SHA-256 `59B94147C00A39972DF796C14DC57EDDBB6CC98422B56EFCF6C644ABB1ECBC98`; the original was unchanged. Untracked sample PFM files were not modified.
+
+**Completion and failure behavior:** the successful run completed after the exact requested pair count appeared, PFM sizes and timestamps stabilized, the progress-window check found no recognized render window, and all Worker PACK requests returned validated EXRs. The progress window itself was not observed, so native exporter completion remains inferred from file readiness. The five-minute watchdog reports stalls or missing output as failure. Cancellation is not reliably distinguished from exporter failure or timeout, and cancellation behavior was not tested; preserve written PFMs and never report success unless all expected frames validate through the Worker.
+
 ## Key unresolved risks
 
-1. Python's per-frame PFM readiness condition and normal-end/cancel/failure detection have not been established; a special SFM hook is not assumed.
+1. Panel-launched completion uses stable files and an optional progress-window check; native exporter completion signaling and cancellation/failure distinction still need verification. A special SFM hook is not assumed.
 2. Only one real beauty/depth PFM pair has been inspected; beauty color/depth semantics remain unknown.
 3. Bridge error recovery, Unicode paths, repeated load/unload, and behavior during an active SFM render remain untested.
 4. The initial EXR schema and transform metadata remain proposals.

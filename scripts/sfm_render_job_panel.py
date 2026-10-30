@@ -4,8 +4,9 @@
 #
 # This is an initial panel over the experimentally verified Sequence Exporter
 # path. UI settings remain separate from Worker settings. The first version is
-# deliberately capped at three frames and 1280x720; cancellation/failure state
-# detection and other resolutions are not yet production-ready.
+# deliberately capped at three frames and 1280x720; completion is gated by the
+# native progress window closing, stable PFM pairs, header checks, and Worker
+# PACK validation. Cancellation/failure classification remains best-effort.
 
 import ctypes
 import hashlib
@@ -303,6 +304,32 @@ def _ready(paths):
     return False
 
 
+def _pfm_dimensions(path):
+    """Read only the PFM header; pixel parsing remains in the x64 Worker."""
+    with open(path, "rb") as stream:
+        magic = stream.readline().strip()
+        if magic not in ("PF", "Pf"):
+            raise RuntimeError("%s has invalid PFM magic %r" % (path, magic))
+        dimensions = stream.readline().strip().split()
+        if len(dimensions) != 2:
+            raise RuntimeError("%s has malformed PFM dimensions" % path)
+        try:
+            width, height = int(dimensions[0]), int(dimensions[1])
+        except ValueError:
+            raise RuntimeError("%s has non-numeric PFM dimensions" % path)
+        if width <= 0 or height <= 0:
+            raise RuntimeError("%s has non-positive PFM dimensions" % path)
+        scale = stream.readline().strip()
+        if not scale:
+            raise RuntimeError("%s has a missing PFM scale" % path)
+        try:
+            if float(scale) == 0.0:
+                raise RuntimeError("%s has a zero PFM scale" % path)
+        except ValueError:
+            raise RuntimeError("%s has a malformed PFM scale" % path)
+        return width, height
+
+
 class RenderJobPanel(QtGui.QDialog):
     def __init__(self, parent=None):
         QtGui.QDialog.__init__(self, parent)
@@ -389,7 +416,7 @@ class RenderJobPanel(QtGui.QDialog):
         worker_form.addRow("Memory limit (MiB)", self.memory_mib)
         root.addWidget(worker_box)
 
-        self.disclaimer = QtGui.QLabel("Prototype limit: 1–3 frames, 1280×720. Render completion and cancellation detection are experimental.")
+        self.disclaimer = QtGui.QLabel("Prototype limit: 1–3 frames, 1280×720. SFM must have a session open before Start.")
         self.disclaimer.setWordWrap(True)
         root.addWidget(self.disclaimer)
         self.status = QtGui.QLabel("Choose a session and configure a short render.")
@@ -530,7 +557,7 @@ class RenderJobPanel(QtGui.QDialog):
             return
         self._render_config = config
         self._set_busy(True)
-        self.status.setText("Opening selected session…")
+        self.status.setText("Opening disposable session copy…")
         self._log_path = None
         _log("queued selected-session open for %s" % config["session"])
         QtCore.QTimer.singleShot(0, self._open_session)
@@ -538,17 +565,25 @@ class RenderJobPanel(QtGui.QDialog):
     def _open_session(self):
         config = self._render_config
         try:
-            # Open a job-local copy so the selected source session is not saved
-            # or changed by the export dialog during this prototype.
+            # Preserve the job-local copy for audit/recovery. SFM has loaded
+            # disposable copies reliably from its own sessions directory in
+            # the Sequence Export POC; opening the output-folder copy here
+            # produced delayed materialsystem access violations.
             os.makedirs(config["job_dir"])
             config["session_copy"] = os.path.join(config["job_dir"], "session_copy.dmx")
             shutil.copyfile(config["session"], config["session_copy"])
+            config["sfm_session_copy"] = os.path.join(
+                SESSIONS_DIR, "_modern_sfm_%s.dmx" % os.path.basename(config["job_dir"]))
+            if os.path.exists(config["sfm_session_copy"]):
+                raise RuntimeError("disposable SFM session already exists: %s" %
+                                   config["sfm_session_copy"])
+            shutil.copyfile(config["session_copy"], config["sfm_session_copy"])
             wizard = _initial_session_wizard()
             if wizard is not None:
                 raise RuntimeError("SFM startup wizard is still open; open a session and retry")
-            opened = sfmApp.OpenDocument(config["session_copy"])
-            _log("OpenDocument(disposable copy %s) returned %r" %
-                 (config["session_copy"], opened))
+            opened = sfmApp.OpenDocument(config["sfm_session_copy"])
+            _log("OpenDocument(disposable SFM-session copy %s; job archive %s) returned %r" %
+                 (config["sfm_session_copy"], config["session_copy"], opened))
             if opened is False or opened is None:
                 raise RuntimeError("SFM did not open the selected session")
             self._session_open_started = time.time()
@@ -557,7 +592,7 @@ class RenderJobPanel(QtGui.QDialog):
             self._finish("Failed to open selected session: %s" % error)
 
     def _wait_for_document(self):
-        expected = os.path.basename(self._render_config["session_copy"]).lower()
+        expected = os.path.basename(self._render_config["sfm_session_copy"]).lower()
         loaded = False
         for widget in QtGui.QApplication.instance().topLevelWidgets():
             try:
@@ -643,7 +678,7 @@ class RenderJobPanel(QtGui.QDialog):
                     break
             if export_button is None:
                 raise RuntimeError("enabled Export Movie button not found")
-            self.status.setText("SFM rendering %d frame(s)… completion detection is experimental." % self._expected_frames)
+            self.status.setText("SFM rendering: waiting for %d Beauty/Depth pair(s)…" % self._expected_frames)
             export_button.click()
             self._timer.start()
         except Exception as error:
@@ -685,7 +720,7 @@ class RenderJobPanel(QtGui.QDialog):
             stable = _ready(paths) if enough else False
             if enough and quiet and stable and not progress_open:
                 self._timer.stop()
-                self.status.setText("PFMs stable. Validating and writing EXRs…")
+                self.status.setText("Expected PFM pairs are stable. Checking dimensions…")
                 QtCore.QTimer.singleShot(0, self._process_pairs)
                 return
             if elapsed > MAX_RENDER_SECONDS:
@@ -709,6 +744,21 @@ class RenderJobPanel(QtGui.QDialog):
             paths = [path for pair in pairs for path in pair]
             if not _ready(paths):
                 raise RuntimeError("PFM sizes and timestamps did not stabilize")
+            for index, (beauty, depth) in enumerate(pairs):
+                beauty_size = _pfm_dimensions(beauty)
+                depth_size = _pfm_dimensions(depth)
+                expected_size = (self._render_config["width"], self._render_config["height"])
+                if beauty_size != depth_size:
+                    raise RuntimeError("frame %d Beauty/Depth dimensions differ: %r vs %r" %
+                                       (index, beauty_size, depth_size))
+                if beauty_size != expected_size:
+                    raise RuntimeError("frame %d dimensions are %r; expected %r" %
+                                       (index, beauty_size, expected_size))
+                _log("frame %d PFM headers verified: Beauty=%r Depth=%r" %
+                     (index, beauty_size, depth_size))
+            self.status.setText("PFM pairs match %dx%d. Worker is validating EXRs…" %
+                                (self._render_config["width"], self._render_config["height"]))
+            QtGui.QApplication.instance().processEvents()
             bridge = _load_bridge()
             for index, pair in enumerate(pairs):
                 beauty, depth = pair
@@ -716,10 +766,12 @@ class RenderJobPanel(QtGui.QDialog):
                 output = os.path.splitext(beauty)[0] + ".exr"
                 message = _pack(bridge, beauty, depth, output,
                                 self._render_config["memory_mib"])
+                if not os.path.isfile(output) or os.path.getsize(output) <= 0:
+                    raise RuntimeError("frame %d EXR is missing or empty after Worker response" % index)
                 after = (_sha256(beauty), _sha256(depth))
                 if before != after:
                     raise RuntimeError("source PFM changed during Worker processing")
-                self.status.setText("Validated frame %d/%d" % (index + 1, len(pairs)))
+                self.status.setText("Worker validated EXR %d/%d" % (index + 1, len(pairs)))
                 QtGui.QApplication.instance().processEvents()
                 _log(message)
             _log("job completed: %d EXR frame(s); all source PFMs retained" % len(pairs))
