@@ -8,7 +8,7 @@ This document records implemented behavior and the remaining architecture. Terms
 - **Proposed** means a recommended design that still needs verification or approval.
 - **Unresolved** means evidence or a decision is still required.
 
-The x64 PFM-to-EXR Worker and a minimal x86 Bridge-to-x64 Worker Named Pipe pipeline are implemented. A live SFM embedded-Python proof also configured and launched the native Sequence Exporter for three frames, then processed the resulting Beauty/Depth PFM pairs through the existing Bridge and Worker into validated EXRs. Source PFMs remained in place. This proves a short happy path for one session and 1280x720 output; production job UI, robust render outcome detection, cancellation, and general resolution handling remain unimplemented or unresolved.
+The x64 PFM-to-EXR Worker and a minimal x86 Bridge-to-x64 Worker Named Pipe pipeline are implemented. A live SFM embedded-Python proof also configured and launched the native Sequence Exporter for three frames, then processed the resulting Beauty/Depth PFM pairs through the existing Bridge and Worker into validated EXRs. Source PFMs remained in place. The first Render Job panel is implemented, but panel-launched rendering still needs a live run after SFM's normal startup chooser has loaded a document. Robust render outcome detection, cancellation, and general resolution handling remain unresolved.
 
 ## Purpose and scope
 
@@ -75,7 +75,15 @@ The exporter produced three matching Beauty/Depth PFM filename pairs. Their size
 
 This is evidence for the tested session and settings, not a stable SFM API contract. The script drives Qt controls in the native dialog rather than calling a verified Python renderer API. A progress window was not observed in the successful run. Success was inferred from the requested pair count, stable file metadata, and Worker validation; cancellation and native render failure were not successfully exercised. Separately, a 640x360 attempt yielded a depth PFM at 1280x720, which the Worker correctly rejected for dimension mismatch. Keep 1280x720 as the only demonstrated-safe resolution until alignment behavior at other sizes is investigated. No PFM is automatically deleted.
 
-## Job workflow (proposed; not implemented)
+## First Render Job panel (implemented; job path not yet live-verified)
+
+`scripts/sfm_render_job_panel.py` creates an SFM-hosted Qt window with session selection, inclusive start/end frames, output directory, the verified 1280x720 resolution, Progressive Refinement and Depth PFM controls, DOF/Motion Blur toggles, Worker memory limit, fixed single-Worker display, confirmation, and status/progress display. DOF and Motion Blur are rejected when enabled because this output path has not been validated for those settings. Jobs are capped at three frames. The panel copies the selected DMX session into the new job output folder, opens that copy, configures the native exporter, and uses the existing Bridge `PACK` flow. It retains source PFMs and verifies their hashes around conversion.
+
+The panel window and its controls were loaded in SFM's embedded Python 2.7. Tests found that SFM opens a modal `CQSFMNewWizardDialog` when launched without a document. Calling `sfmApp.OpenDocument` while that wizard is still active can leave the startup state blocked; rejecting or hiding the wizard caused SFM crashes in experiments. Therefore Start remains disabled until SFM's normal startup chooser has opened a document. The panel then selects and opens its own disposable copy for the job. A complete live job run launched from the panel after SFM has a document is still required before this panel workflow is considered verified.
+
+The interface fixes the Worker count at one because the current Bridge API manages one Worker. The memory budget is passed through `PACK`. The render range, output, Progressive Refinement, and depth options are applied to SFM; memory is a Worker option. The native progress window was not reliably observed, so the panel shows pair-count and validation status rather than claiming verified render progress or cancellation. Resolution remains fixed at 1280x720 because the 640x360 attempt produced mismatched Beauty/Depth dimensions.
+
+## Worker batch state machine (proposed; not implemented)
 
 1. SFM runs the ModernSFM Python orchestration script.
 2. Python initializes the Bridge; the Bridge starts or connects to the x64 Worker.

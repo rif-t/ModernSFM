@@ -8,6 +8,8 @@ The repository contains a standalone x64 Worker and a first x86 Bridge prototype
 
 The Worker has passed synthetic tests and processed real SFM frames. The x86 Bridge starts the x64 Worker through a local named pipe and forwards `PACK` requests. A live SFM Python 2.7 proof configured and launched the native Sequence Exporter for an inclusive three-frame range, exported matching 1280x720 Beauty/Depth PFMs, then sent all three pairs through the Bridge and Worker. All EXRs validated and the source PFMs remained byte-identical. The proof uses Qt controls in the native export dialog; cancellation/failure status and arbitrary-resolution depth alignment still need work. Color and depth semantics remain unverified.
 
+The first ModernSFM Render Job window is implemented in `scripts/sfm_render_job_panel.py`. It provides session selection, inclusive frame range, output folder, the verified 1280x720 render preset, separate render/Worker settings, a confirmation prompt, status, and source-PFM retention. Its job controls use a disposable copy of the selected session. SFM's initial New Session wizard must first load a document; Start remains disabled until then because programmatically bypassing that wizard was not safe in tests. Panel-launched rendering after this bootstrap step still needs an end-to-end live run.
+
 ## Build and verify
 
 Use Visual Studio 2022 or newer with x86 and x64 C++ workloads, CMake, and vcpkg. The x64 Worker uses OpenEXR; the Bridge has no image-processing dependencies.
@@ -29,7 +31,9 @@ cmake --build build/x86 --config Release
 & "<SFM-root>/game/sdktools/python/2.7/win32/python.exe" scripts/sfm_bridge_smoke.py
 ```
 
-To run the current render proof in SFM, launch `sfm.exe -game usermod -sfm_startup_script "<ModernSFM-root>/scripts/sfm_sequence_export_poc.py" -condebug -console`. It uses a disposable copy of `session4.dmx`, writes under `build/sfm_sequence_poc`, and records results in `build/sfm_sequence_export_poc.txt`.
+To open the Render Job window in SFM, launch `sfm.exe -game usermod -sfm_startup_script "<ModernSFM-root>/scripts/sfm_render_job_panel.py" -condebug -console`. Open a session through SFM's initial chooser; the ModernSFM window then enables Start. Select the session to render in ModernSFM; each job writes to a new output subfolder and opens a disposable copy. This prototype supports at most three frames at 1280x720.
+
+The independently tested native-export proof remains available as `scripts/sfm_sequence_export_poc.py`; it writes under `build/sfm_sequence_poc` and records its result in `build/sfm_sequence_export_poc.txt`.
 
 The standalone command is `modern_sfm_worker pack --beauty <RGB.pfm> --depth <Z.pfm> --output <result.exr> [--max-memory-mib <MiB>]`. Existing output files are never overwritten.
 
@@ -41,7 +45,7 @@ SFM Python (x86 / Python 2.7)
         -> ModernSFM Worker (x64 process)
 ```
 
-Python orchestrates the workflow. The Bridge owns Worker lifecycle and local IPC. The x64 Worker performs PFM parsing, image processing, and EXR generation. Image buffers stay out of Python, the Bridge, and IPC. The Bridge protocol supports `PING`, `ECHO`, `PACK`, and graceful `QUIT`. `PACK` sends UTF-8 file paths and a memory limit; the Worker reads the PFM files directly, validates and writes the EXR, and returns a typed result. The render proof uses a single synchronous Worker and has no user-facing Render Job UI or batch state tracking.
+Python orchestrates the workflow. The Bridge owns Worker lifecycle and local IPC. The x64 Worker performs PFM parsing, image processing, and EXR generation. Image buffers stay out of Python, the Bridge, and IPC. The Bridge protocol supports `PING`, `ECHO`, `PACK`, and graceful `QUIT`. `PACK` sends UTF-8 file paths and a memory limit; the Worker reads the PFM files directly, validates and writes the EXR, and returns a typed result. The first Render Job UI is an experimental SFM-hosted window; it still uses one synchronous Worker and does not yet provide durable job history, reliable cancellation, or verified SFM failure status.
 
 ## Documentation
 

@@ -2,7 +2,7 @@
 
 ## Status and sequencing
 
-The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains fixed: SFM Python x86 → Bridge DLL x86 → separate Worker x64. The standalone Worker and x86 Bridge prototype are implemented. A live embedded-Python proof configured SFM's native Sequence Exporter, rendered three frames, and processed the Beauty/Depth PFM pairs through the Bridge and Worker into validated EXRs. Production render completion, cancellation/failure handling, UI/job state, and broad resolution support remain open; see [Architecture](ARCHITECTURE.md).
+The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains fixed: SFM Python x86 → Bridge DLL x86 → separate Worker x64. The standalone Worker and x86 Bridge prototype are implemented. A live embedded-Python proof configured SFM's native Sequence Exporter, rendered three frames, and processed the Beauty/Depth PFM pairs through the Bridge and Worker into validated EXRs. The first Render Job window is also implemented, but job launch from that panel remains unverified because SFM's startup wizard must first load a document. Production completion/cancel/failure states and broad resolution support remain open.
 
 ## Phase 0 — Evidence and architecture validation
 
@@ -67,7 +67,7 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 - Publish through a temporary output followed by reopen/validation and atomic/failure-safe final publication where supported.
 - Keep source retention as the safe default; delete inputs only after validated publication and explicit user policy.
 
-**Current implementation:** `scripts/sfm_sequence_export_poc.py` is an experimental live test, not the Render Job UI. It is pinned to one session, 1280×720, and a three-frame guard. The user-facing Render Job Manager, separate render/Worker settings, durable progress, and reliable cancel/failure states are next implementation work.
+**Current implementation:** `scripts/sfm_sequence_export_poc.py` is the experimentally verified native export path. `scripts/sfm_render_job_panel.py` is the first user-facing panel: it owns session selection, inclusive frame range, output path, separate render/Worker settings, confirmation, and status. It limits jobs to three frames at 1280×720, uses a disposable session copy, and keeps PFMs. SFM's initial New Session wizard has to load a document first; attempts to bypass it programmatically were unstable, so the panel disables Start until a document exists. The panel's exporter-to-Worker job flow still needs a live run after that bootstrap requirement. Durable job history, reliable progress, cancellation, render-failure detection, and other resolutions remain future work.
 
 **Gate:** repeatable end-to-end success and failure tests show no partial EXR published as final, no premature input deletion, and no indefinite SFM blocking.
 
