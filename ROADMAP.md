@@ -2,13 +2,13 @@
 
 ## Status and sequencing
 
-The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains fixed: SFM Python x86 → Bridge DLL x86 → separate Worker x64. The standalone PFM/EXR Worker milestone is complete. A minimal Named Pipe command round trip through an x86 Bridge and x64 Worker has also passed inside SFM's embedded Python 2.7. PFM readiness, SFM render integration, and batch processing remain open; see [Phase 0 Evidence](PHASE0_EVIDENCE.md).
+The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains fixed: SFM Python x86 → Bridge DLL x86 → separate Worker x64. The standalone Worker and x86 Bridge prototype are implemented. A live embedded-Python proof configured SFM's native Sequence Exporter, rendered three frames, and processed the Beauty/Depth PFM pairs through the Bridge and Worker into validated EXRs. Production render completion, cancellation/failure handling, UI/job state, and broad resolution support remain open; see [Architecture](ARCHITECTURE.md).
 
 ## Phase 0 — Evidence and architecture validation
 
 **Goal:** resolve the data and integration assumptions that block implementation.
 
-**Status:** partial. One 3840×2160 real beauty/depth pair has been parsed and round-tripped with top-to-bottom row orientation confirmed by the user. Beauty contains values above 1; depth contains large finite values that may be sentinels. Valve documents Source HDR processing and the existence/purpose of SFM's depth-PFM option, but public information found does not define the SFM PFM export transforms or depth equation. See [Phase 0 Evidence](PHASE0_EVIDENCE.md).
+**Status:** partial. Real PFM parsing and row orientation are verified for the supplied frame. The live export proof also confirms three matching pairs from one session at 1280×720 can be processed. Beauty color interpretation and depth meaning remain unverified; public information found does not define the SFM PFM export transforms or depth equation. A 640×360 test produced 1280×720 depth, so other resolution behavior is unresolved. See [Phase 0 Evidence](PHASE0_EVIDENCE.md) and [Architecture](ARCHITECTURE.md).
 
 - Expand the one collected SFM beauty/depth pair to representative scenes and settings.
 - Verify which PFM header/payload, channel, scale/endian, and row-orientation properties are stable across frames.
@@ -22,7 +22,7 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 
 **Deferred by user:** Beauty color-space and depth-value calibration may remain open for the initial opaque PFM-to-EXR path. Preserve sample values unchanged and do not add semantic transforms or metadata. This deferral does not waive the need to establish that each input pair is complete and readable before processing.
 
-**Investigation update (2026-10-30):** The installed bundled Python executable reports CPython 2.7.5, 32-bit, imports `ctypes`, and can call a basic Win32 API. This is only a bundled-runtime baseline, not an in-SFM Bridge load test. Inspection of the non-working legacy frontend confirms it polls a Qt layoff progress dialog and/or expected output counts and writes a sentinel; neither has been verified against cancellation, failure, or file flushing. No reliable per-frame readiness or batch-end contract has been established. The proposed model is per-frame `frame_ready` notifications from Python, with no special hook assumed, and an explicit end-of-submissions outcome. See [Architecture](ARCHITECTURE.md) for the proposed protocol and required investigation.
+**Investigation update (2026-10-30):** SFM embedded Python 2.7.5, the x86 Bridge, and x64 Worker passed a live three-frame render-to-EXR proof using the native Sequence Exporter and a disposable session copy. The dialog's Qt controls accepted/read back the tested PFM, depth, frame range, and quality settings; 0..2 inclusive required exporter end field 3 in this run. Repeated stable size/mtime checks and Worker PFM validation produced three validated EXRs while retaining source PFMs. This is a tested POC heuristic, not a production completion contract. Progress UI was not observed; cancellation and native failure behavior remain unverified. The 640×360 attempt had depth/beauty mismatch and was rejected safely. See [Architecture](ARCHITECTURE.md) and the POC log in `build/sfm_sequence_export_poc.txt`.
 
 **Later integration check:** the x86 Bridge and x64 Worker have since completed a PING/ECHO/QUIT round trip when launched by SFM's own Python 2.7 startup-script facility. This verifies the native process boundary, not frame readiness or render completion.
 
@@ -57,15 +57,17 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 
 ## Phase 3 — SFM single-frame integration
 
-**Goal:** complete one SFM render-to-EXR operation through embedded Python and the Bridge.
+**Goal:** demonstrate a short SFM render-to-EXR operation through embedded Python and the Bridge, then harden orchestration for real jobs.
 
-**Status:** real-file PFM-to-EXR processing through the Bridge is verified inside SFM using an already-rendered pair. The integration has not initiated an SFM render, and no reliable per-frame readiness or render-completion signal has been verified.
+**Status:** three-frame end-to-end POC passed: embedded Python configured and started the native Sequence Exporter on a disposable session copy, then sent all three PFM pairs through the existing Bridge to the Worker. EXRs were validated and inputs retained. This does not establish production-grade completion, cancellation, failure, or arbitrary-resolution behavior.
 
 - Reuse the live-verified x86 Bridge binding from SFM's actual Python environment.
-- Have Python submit newly rendered frames only after its readiness condition is experimentally verified; a special SFM hook is not assumed.
+- Replace the POC's dialog/count/stability heuristics with a reliable render completion and cancellation/failure model, or document the exact practical limitation if SFM exposes no usable signal. Do not add a hook without evidence it is required.
 - Extend the real-pair smoke test to verify input and EXR pixel values from the Bridge path, beyond the Worker’s existing reopen-and-compare validation.
 - Publish through a temporary output followed by reopen/validation and atomic/failure-safe final publication where supported.
-- Add configurable source retention; delete inputs only after validated publication.
+- Keep source retention as the safe default; delete inputs only after validated publication and explicit user policy.
+
+**Current implementation:** `scripts/sfm_sequence_export_poc.py` is an experimental live test, not the Render Job UI. It is pinned to one session, 1280×720, and a three-frame guard. The user-facing Render Job Manager, separate render/Worker settings, durable progress, and reliable cancel/failure states are next implementation work.
 
 **Gate:** repeatable end-to-end success and failure tests show no partial EXR published as final, no premature input deletion, and no indefinite SFM blocking.
 

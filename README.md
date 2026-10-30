@@ -6,7 +6,7 @@ ModernSFM is a rendering and post-processing prototype for Source Filmmaker. SFM
 
 The repository contains a standalone x64 Worker and a first x86 Bridge prototype. The Worker strictly parses a paired RGB beauty PFM and single-channel depth PFM, writes a multilayer FLOAT OpenEXR, reopens it, and checks channel types, dimensions, and sample values. It keeps the top-to-bottom row order observed in an SFM render. The `image-final` layer is currently an identity copy of `raw-sfm`; no color-space interpretation is asserted. Source PFMs are preserved.
 
-The Worker has passed synthetic tests and processed one real SFM frame pair. The x86 Bridge starts the x64 Worker through a local named pipe and forwards a single-pair `PACK` request. The Python 2.7 smoke script passed under both the bundled 32-bit interpreter and live SFM embedded interpreter, producing a validated 3840x2160 FLOAT multilayer EXR from the real sample pair. Source PFMs were retained. SFM render orchestration, color transforms, effects, batching, and cleanup are not implemented. Color and depth semantics remain unverified.
+The Worker has passed synthetic tests and processed real SFM frames. The x86 Bridge starts the x64 Worker through a local named pipe and forwards `PACK` requests. A live SFM Python 2.7 proof configured and launched the native Sequence Exporter for an inclusive three-frame range, exported matching 1280x720 Beauty/Depth PFMs, then sent all three pairs through the Bridge and Worker. All EXRs validated and the source PFMs remained byte-identical. The proof uses Qt controls in the native export dialog; cancellation/failure status and arbitrary-resolution depth alignment still need work. Color and depth semantics remain unverified.
 
 ## Build and verify
 
@@ -29,7 +29,7 @@ cmake --build build/x86 --config Release
 & "<SFM-root>/game/sdktools/python/2.7/win32/python.exe" scripts/sfm_bridge_smoke.py
 ```
 
-To run in SFM itself, launch `sfm.exe -game usermod -sfm_startup_script "<ModernSFM-root>/scripts/sfm_bridge_smoke.py" -condebug -console`. The script writes `build/sfm_bridge_smoke_result.txt` and prints results to SFM's Python output.
+To run the current render proof in SFM, launch `sfm.exe -game usermod -sfm_startup_script "<ModernSFM-root>/scripts/sfm_sequence_export_poc.py" -condebug -console`. It uses a disposable copy of `session4.dmx`, writes under `build/sfm_sequence_poc`, and records results in `build/sfm_sequence_export_poc.txt`.
 
 The standalone command is `modern_sfm_worker pack --beauty <RGB.pfm> --depth <Z.pfm> --output <result.exr> [--max-memory-mib <MiB>]`. Existing output files are never overwritten.
 
@@ -41,7 +41,7 @@ SFM Python (x86 / Python 2.7)
         -> ModernSFM Worker (x64 process)
 ```
 
-Python orchestrates the workflow. The Bridge owns Worker lifecycle and local IPC. The x64 Worker performs PFM parsing, image processing, and EXR generation. Image buffers stay out of Python, the Bridge, and IPC. The Bridge protocol supports `PING`, `ECHO`, `PACK`, and graceful `QUIT`. `PACK` sends UTF-8 file paths and a memory limit; the Worker reads the PFM files directly, validates and writes the EXR, and returns a typed result. Batch states and SFM render sequencing are not implemented.
+Python orchestrates the workflow. The Bridge owns Worker lifecycle and local IPC. The x64 Worker performs PFM parsing, image processing, and EXR generation. Image buffers stay out of Python, the Bridge, and IPC. The Bridge protocol supports `PING`, `ECHO`, `PACK`, and graceful `QUIT`. `PACK` sends UTF-8 file paths and a memory limit; the Worker reads the PFM files directly, validates and writes the EXR, and returns a typed result. The render proof uses a single synchronous Worker and has no user-facing Render Job UI or batch state tracking.
 
 ## Documentation
 

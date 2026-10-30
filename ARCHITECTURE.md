@@ -8,7 +8,7 @@ This document records implemented behavior and the remaining architecture. Terms
 - **Proposed** means a recommended design that still needs verification or approval.
 - **Unresolved** means evidence or a decision is still required.
 
-The x64 PFM-to-EXR Worker and a minimal x86 Bridge-to-x64 Worker Named Pipe pipeline are implemented. The live SFM embedded-Python smoke run processed the real 3840x2160 sample PFM pair through the Bridge and Worker into a validated multilayer FLOAT EXR. Source PFMs remained in place. SFM rendering handoff and batch processing remain unimplemented.
+The x64 PFM-to-EXR Worker and a minimal x86 Bridge-to-x64 Worker Named Pipe pipeline are implemented. A live SFM embedded-Python proof also configured and launched the native Sequence Exporter for three frames, then processed the resulting Beauty/Depth PFM pairs through the existing Bridge and Worker into validated EXRs. Source PFMs remained in place. This proves a short happy path for one session and 1280x720 output; production job UI, robust render outcome detection, cancellation, and general resolution handling remain unimplemented or unresolved.
 
 ## Purpose and scope
 
@@ -65,22 +65,31 @@ The current vertical slice is a transport/lifecycle proof only:
 
 This path was run inside the installed SFM application using `-sfm_startup_script`; the result log reported CPython 2.7.5, 32-bit, successful `PING`/`ECHO`, a real-pair `PACK` result, and clean shutdown. The built Bridge is x86 and Worker is x64. `PACK` uses a 24-byte little-endian header (`PACK`, three UTF-8 path byte lengths, and a uint64 memory limit in MiB), followed by the beauty, depth, and output paths. The Worker rejects malformed lengths, oversized/empty paths, embedded NULs, and zero memory limits. Its response contains `RSLT`, a uint32 status, a uint32 UTF-8 message length, and the result or error message. Job-level errors are returned as result statuses while keeping the pipe available. The Worker reads source files directly, writes and validates EXR, and retains the PFM inputs.
 
-The sample integration run produced `build/test000240_bridge_sfm_<sfm-pid>.exr` (3840x2160, FLOAT, ZIP; 108,666,892 bytes). The same Python 2.7-compatible script also passed through the bundled 32-bit interpreter. The SFM smoke test checks the response, output existence/nonzero size, and source-file retention. The test does not verify SFM render readiness or batch completion because it operates on an already-existing pair.
+The sample integration run produced `build/test000240_bridge_sfm_<sfm-pid>.exr` (3840x2160, FLOAT, ZIP; 108,666,892 bytes). The same Python 2.7-compatible script also passed through the bundled 32-bit interpreter. The SFM smoke test checks the response, output existence/nonzero size, and source-file retention. The original smoke test operated on an already-existing pair; the separate native exporter proof below now provides limited live-render evidence.
+
+## Native Sequence Export proof of concept (tested)
+
+`scripts/sfm_sequence_export_poc.py` runs inside SFM's embedded Python 2.7. It opens a disposable copy of the local `session4.dmx`, finds and triggers SFM's native `Movie...` QAction, configures the visible Export Movie Qt controls, and starts a short Image Sequence/PFM export. It sets a ModernSFM-facing inclusive range of frames 0..2; in this tested session, the exporter end field behaved as an exclusive boundary, so the script submitted 0..3 to obtain three frames. It verified the configured 1280x720 size, PFM output, depth enabled, audio disabled, progressive refinement enabled, Depth of Field disabled, and Motion Blur disabled by reading the controls back. The light-sample override remained at its camera default while DOF was off.
+
+The exporter produced three matching Beauty/Depth PFM filename pairs. Their sizes and modification times remained stable over repeated checks. The script sent each pair by path through the existing x86 Bridge to the x64 Worker's `PACK` request. The Worker validated each PFM pair, produced and reopened the EXR, and returned success. The POC also checked nonempty EXR outputs and SHA-256 equality of the source PFMs before and after conversion; all PFMs remained present and unchanged. The run result is recorded in `build/sfm_sequence_export_poc.txt`; outputs are under `build/sfm_sequence_poc/render_20261030_215239`.
+
+This is evidence for the tested session and settings, not a stable SFM API contract. The script drives Qt controls in the native dialog rather than calling a verified Python renderer API. A progress window was not observed in the successful run. Success was inferred from the requested pair count, stable file metadata, and Worker validation; cancellation and native render failure were not successfully exercised. Separately, a 640x360 attempt yielded a depth PFM at 1280x720, which the Worker correctly rejected for dimension mismatch. Keep 1280x720 as the only demonstrated-safe resolution until alignment behavior at other sizes is investigated. No PFM is automatically deleted.
 
 ## Job workflow (proposed; not implemented)
 
-1. SFM starts the ModernSFM Python orchestration script.
+1. SFM runs the ModernSFM Python orchestration script.
 2. Python initializes the Bridge; the Bridge starts or connects to the x64 Worker.
-3. SFM renders beauty and depth PFM files.
-4. Python sends a batch configuration through the Bridge, including an inclusive frame range and input/output naming patterns.
-5. As SFM renders each frame and Python determines its Beauty and Depth PFMs are ready, Python sends a frame-ready notification with the two paths. The reliability of this readiness determination remains unverified.
-6. The Bridge forwards only control data and paths over local IPC; the Worker reads the files directly.
-7. The Worker validates both inputs, parses them, processes the data, writes a temporary EXR, reopens and validates it, and publishes the final output.
-8. The Worker reports frame acceptance, start, completion, or failure; the Bridge returns statuses to Python.
-9. Python closes batch submission with a final outcome (normal end, cancellation, or render failure). The Worker reports batch completion only after submission is closed and every expected frame has a terminal state; missing frames become failures, never successes.
-10. Input PFMs may be deleted only after validated output publication and according to the configured retention policy. On any error or interruption, source files remain available.
+3. Python configures and triggers the native Sequence Exporter through the SFM Qt UI. This control path has been demonstrated for a three-frame POC but is not yet a production interface.
+4. SFM renders beauty and depth PFM files.
+5. Python sends a batch configuration through the Bridge, including an inclusive frame range and input/output naming patterns.
+6. As SFM renders each frame and Python determines its Beauty and Depth PFMs are ready, Python sends a frame-ready notification with the two paths. The reliability of this readiness determination remains unverified.
+7. The Bridge forwards only control data and paths over local IPC; the Worker reads the files directly.
+8. The Worker validates both inputs, parses them, processes the data, writes a temporary EXR, reopens and validates it, and publishes the final output.
+9. The Worker reports frame acceptance, start, completion, or failure; the Bridge returns statuses to Python.
+10. Python closes batch submission with a final outcome (normal end, cancellation, or render failure). The Worker reports batch completion only after submission is closed and every expected frame has a terminal state; missing frames become failures, never successes.
+11. Input PFMs may be deleted only after validated output publication and according to the configured retention policy. On any error or interruption, source files remain available.
 
-The frame-ready decision and batch-submission close signal are **proposed but unverified**. A special SFM hook is not assumed. Do not treat file existence alone as readiness; Worker validation remains defensive and cannot by itself prove SFM has closed a file or will not replace it. The exact Python-side readiness and normal-end detection mechanism must be tested before live integration.
+The POC observed stable file sizes and timestamps and required Worker validation before accepting the resulting EXRs. This worked for the tested three-frame export, but metadata stability alone is not a proven general readiness contract, and no native completion/progress signal was observed. The production frame-ready decision and batch-submission close signal remain **proposed and unresolved**. A special SFM hook is not assumed. Worker validation remains defensive and cannot by itself prove SFM has closed a file or will not replace it. Normal completion, user cancellation, export failure, SFM shutdown, and partial outputs still need repeatable tests before production job status can be trusted.
 
 ## Python 2.7 native binding (prototype implemented)
 
@@ -100,11 +109,11 @@ The C ABI, response-capacity behavior, timeout and error-recovery cases, and pro
 
 ## Render completion and input readiness
 
-**Confirmed:** the installed Python script search and inspection of the legacy frontend did not establish a documented SFM render-finished callback. The legacy frontend polls UI dialogs and expected output counts, but these are unverified heuristics. The live SFM smoke test did not render a frame and therefore did not test per-frame file readiness.
+**Confirmed:** a live three-frame native export was launched from embedded Python by triggering the native QAction and setting its Qt controls. In that run, all requested Beauty/Depth pairs stabilized and passed Worker validation. The installed script search did not establish a documented render-finished callback. The POC's dialog observation, expected pair count, and file stability checks remain tested heuristics for that run, not a general SFM completion contract.
 
-**Proposed:** Python owns render sequencing and sends one `frame_ready` notification per pair after its readiness condition is met. No special callback or engine hook is added unless investigation proves one is needed. The Worker validates the pair and reports processing state, but does not infer readiness from existence alone.
+**Proposed:** Python owns render sequencing and submits completed pairs after a production-grade readiness condition is established. The current POC waits for the export dialog to return, the expected pair count, stable sizes/timestamps, then lets Worker validation decide whether the pair is structurally processable. No special callback or engine hook is added unless investigation proves one is needed.
 
-**Unresolved:** whether SFM's movie layoff writes each PFM pair synchronously before advancing, exposes a usable completion event, closes files before Python can observe the next frame, or can be monitored reliably without a hook. Also unresolved is how Python detects normal end-of-render versus cancellation/failure in order to close submissions accurately.
+**Unresolved:** whether SFM's movie layoff writes each PFM pair synchronously before advancing, exposes a usable completion event, or closes files before Python can observe the next frame. The POC did not capture the progress window and did not experimentally exercise cancellation or renderer failure, so accurate distinction between normal completion, cancellation, and failure is still missing. The tested exporter end-boundary behavior and depth-size behavior also need validation across sessions and settings.
 
 ### Legacy local prototype (reference only)
 
@@ -126,7 +135,7 @@ Required investigation:
 
 The SFM startup-script smoke test verified the installed embedded CPython 2.7.5 process can load this x86 Bridge with `ctypes.CDLL`, call the C ABI, pass a worker path, exchange messages, and shut down the x64 child without freezing or crashing SFM. A separate run through the bundled 32-bit `python.exe` also passed. Unicode paths, repeated load/unload, IPC failure recovery, and render-time behavior remain untested.
 
-Until then, do not submit files based solely on existence or a fixed delay. Regardless of the handoff signal, the Worker must reject malformed, truncated, mismatched, or unreadable inputs without modifying or deleting them.
+The POC submits files only after repeated stable metadata checks, then relies on Worker parsing and validation; treat that as a narrow experiment, not a production readiness guarantee. The Worker must reject malformed, truncated, mismatched, or unreadable inputs without modifying or deleting them.
 
 ## Batch frame-submission contract (proposed; not implemented)
 
