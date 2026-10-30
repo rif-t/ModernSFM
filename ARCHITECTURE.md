@@ -84,7 +84,7 @@ Compatibility is not assumed. Verify interpreter version/bitness, DLL search beh
 
 The SFM installation contains `game/usermod/scripts/sfm/mainmenu/modern_sfm_frontend.py`, an 88 KB legacy prototype. The project owner confirms this version does not work and prefers a clean rewrite. It is outside this Git repository and must not be edited in place or treated as the implementation source of truth.
 
-Read-only inspection shows that it configures SFM `movieSettings` for PFM output and optional depth, triggers the Export Movie UI, polls for a layoff progress dialog, and writes a `done.sentinel` when the dialog closes after being observed or when a frame count reaches the requested total. It also launches a configured `ModernSFM.exe --watch` through `rm_*` functions exposed by an x86 DLL. This is an existing prototype's behavior, not a verified SFM API contract. Dialog disappearance can also follow cancellation or failure, so the sentinel path is not sufficient evidence of successful render completion without further verification.
+Read-only inspection shows that it configures SFM `movieSettings` for PFM output and optional depth, triggers the Export Movie UI, polls for a layoff progress dialog, and writes a `done.sentinel` when the dialog closes after being observed or when a frame count reaches the requested total. It distinguishes the configuration dialog from the progress dialog by Qt widget details, which is a heuristic tied to the current UI. It also launches a configured `ModernSFM.exe --watch` through `rm_*` functions exposed by an x86 DLL. This is an existing prototype's behavior, not a verified SFM API contract. Dialog disappearance can also follow cancellation or failure, and reaching an expected file count does not prove files are fully flushed or that the render succeeded. Neither condition is sufficient evidence of successful render completion.
 
 The script combines render controls with a viewport bridge, has machine-specific absolute build paths, and references `render_manager.cpp`, an x86 DLL, and an x64 executable that were not present in the inspected ModernSFM project directory. No generated PFM samples or RAM ingest directory were found during that initial inspection; the owner later provided one real beauty/depth pair, recorded in [Phase 0 Evidence](PHASE0_EVIDENCE.md). The clean rewrite should live in the ModernSFM repository and target the agreed render pipeline first; viewport work stays out of scope unless separately approved.
 
@@ -95,6 +95,12 @@ Required investigation:
 - Verify behavior during normal completion, user cancellation, SFM shutdown, and render/export error.
 - Record the observed completion contract and a repeatable pass/fail procedure before choosing the orchestration signal.
 - Use the legacy prototype only to identify prior intended controls and failure reports; do not copy its dialog-close sentinel as a success signal.
+
+## Native binding compatibility investigation
+
+**Preliminary finding:** the bundled interpreter at `game/sdktools/python/2.7/win32/python.exe` reports CPython 2.7.5, 32-bit, and successfully imports `ctypes` and calls `kernel32.GetCurrentProcessId`. The legacy frontend also imports `ctypes` and declares Win32 API signatures. This confirms a 32-bit Python 2.7 runtime and basic `ctypes` availability in the bundled interpreter; it does **not** prove behavior inside SFM's live embedded interpreter, nor does it test loading a ModernSFM Bridge DLL, its ABI/calling convention, DLL search path, or shutdown behavior. Treat `ctypes` as the preferred candidate, not yet selected.
+
+Before Bridge implementation, run a tiny x86 probe DLL with a version function and one integer/string call from a script executed in SFM's own Python console. Verify architecture, calling convention, Unicode path round-trip, error return, SFM responsiveness, and clean process shutdown. Do not use the failed legacy frontend as the probe.
 
 Until then, do not submit files based solely on existence or a fixed delay. Regardless of the completion signal, the Worker must reject malformed, truncated, mismatched, or unreadable inputs without modifying or deleting them.
 

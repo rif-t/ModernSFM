@@ -20,6 +20,10 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 - Approve initial EXR channels, precision, compression, metadata, and data/display windows.
 - Specify Bridge↔Worker IPC, API, timeouts, cancellation, and failure semantics.
 
+**Deferred by user:** Beauty color-space and depth-value calibration may remain open for the initial opaque PFM-to-EXR path. Preserve sample values unchanged and do not add semantic transforms or metadata. This deferral does not waive the need to establish that each input pair is complete and readable before processing.
+
+**Investigation update (2026-10-30):** The installed bundled Python executable reports CPython 2.7.5, 32-bit, imports `ctypes`, and can call a basic Win32 API. This is only a bundled-runtime baseline, not an in-SFM Bridge load test. Inspection of the non-working legacy frontend confirms it polls a Qt layoff progress dialog and/or expected output counts and writes a sentinel; neither has been verified against cancellation, failure, or file flushing. No reliable render-completion contract has been established. See [Architecture](ARCHITECTURE.md) for evidence and the required probe.
+
 **Gate:** implementation starts only after the architecture questions that affect component boundaries and input/output correctness are resolved. Unknown color/depth semantics may remain explicitly marked unknown rather than guessed.
 
 ## Phase 1 — Standalone data-format proof
@@ -130,7 +134,7 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 
 1. A reliable supported SFM render-completion signal has not been established.
 2. Only one real beauty/depth PFM pair has been inspected; beauty color/depth semantics remain unknown.
-3. Bridge loading through `ctypes` in SFM's embedded Python 2.7 remains unverified.
+3. A custom x86 Bridge DLL has not been loaded from SFM's live embedded Python 2.7; only basic `ctypes` availability in the bundled 32-bit Python executable is confirmed.
 4. The initial EXR schema and transform metadata remain proposals.
 5. Multi-instance rendering may require patching `launcher.dll`; safety, version stability, and necessity are unverified.
 6. Community Multi-Render reports ghost frames at frame-range boundaries and resource pressure; the underlying cause and project-specific frequency need independent testing.
