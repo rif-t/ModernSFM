@@ -61,6 +61,10 @@ if(BUILD_TESTING AND MODERNSFM_BUILD_WORKER)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
         add_test(
+            NAME render_job_lifecycle_smoke
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/job_lifecycle_smoke.py"
+        )
+        add_test(
             NAME worker_smoke
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/worker_smoke.py"
                     "$<TARGET_FILE:modern_sfm_worker>"

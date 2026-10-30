@@ -2,7 +2,7 @@
 
 ## Status and sequencing
 
-The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains fixed: SFM Python x86 → Bridge DLL x86 → separate Worker x64. The standalone Worker and x86 Bridge prototype are implemented. A live embedded-Python proof configured SFM's native Sequence Exporter, rendered three frames, and processed the Beauty/Depth PFM pairs through the Bridge and Worker into validated EXRs. The first Render Job window is also implemented, but job launch from that panel remains unverified because SFM's startup wizard must first load a document. Production completion/cancel/failure states and broad resolution support remain open.
+The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains fixed: SFM Python x86 → Bridge DLL x86 → separate Worker x64. The standalone Worker and x86 Bridge prototype are implemented. A panel-launched three-frame render was verified. The panel now includes a strict lifecycle state machine, durable job journal, asynchronous Worker processing, Worker-stage cancellation, and deferred detection of an SFM process exit. Native exporter cancellation and direct exporter failure signaling remain unverified; broad resolution support also remains open.
 
 ## Phase 0 — Evidence and architecture validation
 
@@ -59,7 +59,7 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 
 **Goal:** demonstrate a short SFM render-to-EXR operation through embedded Python and the Bridge, then harden orchestration for real jobs.
 
-**Status:** three-frame end-to-end POC passed: embedded Python configured and started the native Sequence Exporter on a disposable session copy, then sent all three PFM pairs through the existing Bridge to the Worker. EXRs were validated and inputs retained. This does not establish production-grade completion, cancellation, failure, or arbitrary-resolution behavior.
+**Status:** a panel-launched three-frame end-to-end run passed previously. This reliability pass adds the lifecycle state machine and per-job journal, explicit stage diagnostics, incomplete-PFM-set failure reporting, a Qt thread for PACK calls, safe between-frame Worker cancellation, and stale-job recovery after confirmed SFM process exit. Updated scripts pass the bundled Python 2.7 compile check, lifecycle tests pass, Worker thread failure/cancel tests pass, actual Bridge/Worker cancellation passes on a real 3840×2160 input, and Bridge smoke tests cover missing input and Worker termination. A new panel-launched render has not yet been repeated after these monitoring changes.
 
 - Reuse the live-verified x86 Bridge binding from SFM's actual Python environment.
 - Replace the POC's dialog/count/stability heuristics with a reliable render completion and cancellation/failure model, or document the exact practical limitation if SFM exposes no usable signal. Do not add a hook without evidence it is required.
@@ -67,7 +67,7 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 - Publish through a temporary output followed by reopen/validation and atomic/failure-safe final publication where supported.
 - Keep source retention as the safe default; delete inputs only after validated publication and explicit user policy.
 
-**Current implementation:** `scripts/sfm_sequence_export_poc.py` is the experimentally verified native export path. `scripts/sfm_render_job_panel.py` is the first user-facing panel: it owns session selection, inclusive frame range, output path, separate render/Worker settings, confirmation, and status. It limits jobs to three frames at 1280×720, uses a disposable session copy, and keeps PFMs. SFM's initial New Session wizard has to load a document first; attempts to bypass it programmatically were unstable, so the panel disables Start until a document exists. The panel's exporter-to-Worker job flow still needs a live run after that bootstrap requirement. Durable job history, reliable progress, cancellation, render-failure detection, and other resolutions remain future work.
+**Current implementation:** `scripts/sfm_sequence_export_poc.py` is the experimentally verified native export path. `scripts/sfm_render_job_panel.py` owns session selection, inclusive frame range, output path, separate render/Worker settings, confirmation, lifecycle status, and a per-job journal/log. It limits jobs to three frames at 1280×720, uses a disposable session copy, and retains source PFMs and partial EXRs. SFM's initial New Session wizard must load a document before Start. Native completion remains based on stable expected files; incomplete sets that stop changing fail with a missing-file diagnostic, and a five-minute watchdog reports timeout. Rendering cancellation is unavailable because no live-verified native Cancel control was found. Processing cancellation is tested: current PACK finishes, later frames are not submitted, and partial output is retained. SFM process termination is recorded as a failure on the next panel startup when the PID is confirmed dead. Exact render progress and direct native exporter failure signaling remain unresolved.
 
 **Gate:** repeatable end-to-end success and failure tests show no partial EXR published as final, no premature input deletion, and no indefinite SFM blocking.
 
@@ -146,11 +146,11 @@ On 2026-10-30, the user started a real job from the panel using `session5.dmx`, 
 
 **Session safety and crash fix:** an earlier test crashed SFM when opening the disposable copy directly from the external job folder. The panel now stores an archival copy in the job folder and opens a second per-job copy from SFM's own `elements\\sessions` directory. The successful run verified this location. The original `session5.dmx` and the job's `session_copy.dmx` had matching SHA-256 `59B94147C00A39972DF796C14DC57EDDBB6CC98422B56EFCF6C644ABB1ECBC98`; the original was unchanged. Untracked sample PFM files were not modified.
 
-**Completion and failure behavior:** the successful run completed after the exact requested pair count appeared, PFM sizes and timestamps stabilized, the progress-window check found no recognized render window, and all Worker PACK requests returned validated EXRs. The progress window itself was not observed, so native exporter completion remains inferred from file readiness. The five-minute watchdog reports stalls or missing output as failure. Cancellation is not reliably distinguished from exporter failure or timeout, and cancellation behavior was not tested; preserve written PFMs and never report success unless all expected frames validate through the Worker.
+**Completion and failure behavior:** the successful run completed after the exact requested pair count appeared, PFM sizes and timestamps stabilized, the progress-window check found no recognized render window, and all Worker PACK requests returned validated EXRs. The progress window itself was not observed, so native exporter completion remains inferred from file readiness. Reliability tests now cover valid/invalid transitions, job recovery after process exit, missing PFM rejection, Worker termination, injected Worker failure, and cancellation between actual Worker PACK requests. Native render cancellation remains disabled pending an experimentally verified SFM control. All source PFMs and partial EXRs are retained.
 
 ## Key unresolved risks
 
-1. Panel-launched completion uses stable files and an optional progress-window check; native exporter completion signaling and cancellation/failure distinction still need verification. A special SFM hook is not assumed.
+1. Panel-launched completion uses stable files and an optional progress-window check. Native exporter completion signaling, cancellation, and direct failure distinction still need verification. A special SFM hook is not assumed.
 2. Only one real beauty/depth PFM pair has been inspected; beauty color/depth semantics remain unknown.
 3. Bridge error recovery, Unicode paths, repeated load/unload, and behavior during an active SFM render remain untested.
 4. The initial EXR schema and transform metadata remain proposals.

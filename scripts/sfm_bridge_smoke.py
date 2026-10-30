@@ -89,6 +89,48 @@ def _pack(library, beauty, depth, output):
     return message
 
 
+class _ProcessEntry32W(ctypes.Structure):
+    _fields_ = [("dwSize", ctypes.c_ulong), ("cntUsage", ctypes.c_ulong),
+                ("th32ProcessID", ctypes.c_ulong), ("th32DefaultHeapID", ctypes.c_void_p),
+                ("th32ModuleID", ctypes.c_ulong), ("cntThreads", ctypes.c_ulong),
+                ("th32ParentProcessID", ctypes.c_ulong), ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", ctypes.c_ulong), ("szExeFile", ctypes.c_wchar * 260)]
+
+
+def _terminate_test_worker_child():
+    kernel32 = ctypes.windll.kernel32
+    snapshot = kernel32.CreateToolhelp32Snapshot(2, 0)  # TH32CS_SNAPPROCESS
+    if snapshot == ctypes.c_void_p(-1).value:
+        raise RuntimeError("could not snapshot processes to find the test Worker")
+    entry = _ProcessEntry32W()
+    entry.dwSize = ctypes.sizeof(entry)
+    worker_pid = None
+    try:
+        if kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+            while True:
+                if (entry.th32ParentProcessID == os.getpid() and
+                        entry.szExeFile.lower() == "modern_sfm_worker.exe"):
+                    worker_pid = int(entry.th32ProcessID)
+                    break
+                if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                    break
+    finally:
+        kernel32.CloseHandle(snapshot)
+    if worker_pid is None:
+        raise RuntimeError("could not identify the test Worker child process")
+    handle = kernel32.OpenProcess(0x0001 | 0x00100000, False, worker_pid)
+    if not handle:
+        raise RuntimeError("could not open test Worker process %d" % worker_pid)
+    try:
+        if not kernel32.TerminateProcess(handle, 23):
+            raise RuntimeError("could not terminate test Worker process %d" % worker_pid)
+        if kernel32.WaitForSingleObject(handle, 5000) != 0:
+            raise RuntimeError("test Worker process %d did not exit" % worker_pid)
+    finally:
+        kernel32.CloseHandle(handle)
+    return worker_pid
+
+
 def run(bridge_path=None, worker_path=None):
     repo_dir = REPO_DIR
     if bridge_path is None:
@@ -150,6 +192,21 @@ def run(bridge_path=None, worker_path=None):
         if echo_response != echo_message[5:]:
             raise RuntimeError("Unexpected ECHO response: %r" % echo_response)
 
+        missing_beauty = os.path.join(repo_dir, "build", "missing_input_%d.pfm" % os.getpid())
+        missing_depth = os.path.join(repo_dir, "build", "missing_depth_%d.pfm" % os.getpid())
+        missing_output = os.path.join(repo_dir, "build", "missing_input_%d.exr" % os.getpid())
+        try:
+            _pack(bridge, missing_beauty, missing_depth, missing_output)
+            raise RuntimeError("Worker unexpectedly accepted missing PFM inputs")
+        except RuntimeError as error:
+            if "Worker PACK failed" not in str(error):
+                raise
+            _report("Expected Worker job failure returned through Bridge: %s" % error)
+        if _request(bridge, "PING") != "PONG":
+            raise RuntimeError("Worker did not remain usable after a rejected PACK")
+        if os.path.exists(missing_output):
+            raise RuntimeError("failed PACK published an EXR")
+
         beauty = os.path.join(repo_dir, "test000240.pfm")
         depth = os.path.join(repo_dir, "test000240_depth.pfm")
         output = os.path.join(repo_dir, "build", "test000240_bridge_sfm_%d.exr" % os.getpid())
@@ -167,6 +224,21 @@ def run(bridge_path=None, worker_path=None):
         _check(bridge, bridge.shutdown(5000), "Bridge shutdown")
         started = False
         _report("Worker shut down cleanly; Bridge and real-frame smoke test passed.")
+
+        _check(bridge, bridge.start(os.path.abspath(worker_path), 10000),
+               "Bridge restart before Worker-exit test")
+        started = True
+        worker_pid = _terminate_test_worker_child()
+        request = ctypes.create_string_buffer("PING")
+        response = ctypes.create_string_buffer(64 * 1024)
+        response_size = ctypes.c_ulong(0)
+        exit_result = bridge.request(request, 4, response, len(response),
+                                     ctypes.byref(response_size), 5000)
+        if exit_result == 0:
+            raise RuntimeError("Bridge accepted a request after Worker %d exited" % worker_pid)
+        _report("Expected Worker process exit detected by Bridge (%d): %s" %
+                (exit_result, _last_error(bridge)))
+        started = False  # Bridge reset its session when it detected the dead process.
     finally:
         if started:
             bridge.shutdown(1000)

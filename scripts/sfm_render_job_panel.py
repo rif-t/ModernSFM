@@ -10,9 +10,11 @@
 
 import ctypes
 import hashlib
+import json
 import os
 import shutil
 import struct
+import sys
 import time
 
 from PySide import QtCore, QtGui
@@ -22,8 +24,15 @@ except ImportError:
     from PySide import shiboken
 import sfmApp
 
+ROOT = os.environ.get("MODERNSFM_ROOT",
+                      r"D:\WorkFlow\Programming\Projects\ModernSFM")
+SCRIPT_DIR = os.path.join(ROOT, "scripts")
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+from render_job_state import JobStateMachine, recover_interrupted_jobs, write_manifest
+from render_job_processing import ExrProcessingThread
 
-ROOT = r"D:\WorkFlow\Programming\Projects\ModernSFM"
+
 SFM_GAME = r"D:\SteamLibrary\steamapps\common\SourceFilmmaker\game"
 SESSIONS_DIR = os.path.join(SFM_GAME, "usermod", "elements", "sessions")
 BRIDGE_DLL = os.path.join(ROOT, "build", "x86", "Release", "modern_sfm_bridge.dll")
@@ -31,10 +40,14 @@ WORKER_EXE = os.path.join(ROOT, "build", "x64", "Release", "modern_sfm_worker.ex
 LOG = os.path.join(ROOT, "build", "render_job_panel.txt")
 MAX_FRAMES = 3
 MAX_RENDER_SECONDS = 300
+# No exporter progress-window class has been confirmed in a live SFM render.
+# Keep this empty until a specific class and its Cancel behavior are observed.
+VERIFIED_NATIVE_CANCEL_CLASSES = ()
 SUPPORTED_WIDTH = 1280
 SUPPORTED_HEIGHT = 720
 
 _panel_ref = None
+_readiness_signature = None
 
 
 def _log(message):
@@ -44,8 +57,19 @@ def _log(message):
         parent = os.path.dirname(LOG)
         if not os.path.isdir(parent):
             os.makedirs(parent)
-        with open(LOG, "a") as stream:
-            stream.write(line + "\n")
+        paths = [LOG]
+        try:
+            job_log = getattr(_panel_ref, "_job_log_path", None)
+            if job_log and job_log not in paths:
+                paths.append(job_log)
+        except Exception:
+            pass
+        for path in paths:
+            parent = os.path.dirname(path)
+            if not os.path.isdir(parent):
+                os.makedirs(parent)
+            with open(path, "a") as stream:
+                stream.write(line + "\n")
     except Exception:
         pass
 
@@ -244,18 +268,24 @@ def _initial_session_wizard():
 
 
 def _sfm_document_ready():
-    app = QtGui.QApplication.instance()
-    if app is None:
-        return False
-    for widget in app.topLevelWidgets():
-        try:
-            if str(widget.metaObject().className()) == "CQSFMMainWindow":
-                title = str(widget.windowTitle()).lower()
-                return ("no document available" not in title and
-                        " - source filmmaker" in title)
-        except Exception:
-            pass
-    return False
+    global _readiness_signature
+    try:
+        # GetMainWindow is SFM's direct API and is more reliable than relying
+        # on PySide's topLevelWidgets() list, which can omit wrapped C++ windows.
+        widget = _main_window_widget()
+        title = str(widget.windowTitle())
+        class_name = str(widget.metaObject().className())
+        lowered = title.lower()
+        ready = ("no document available" not in lowered and ".dmx" in lowered)
+        signature = (class_name, title, ready)
+    except Exception as error:
+        ready = False
+        signature = ("unavailable", str(error), False)
+    if signature != _readiness_signature:
+        _readiness_signature = signature
+        _log("SFM document readiness: class=%s title=%r ready=%s" %
+             (signature[0], signature[1], ready))
+    return ready
 
 
 def _find_export_dialog():
@@ -282,26 +312,54 @@ def _pairs(directory):
     return sorted(result)
 
 
-def _ready(paths):
-    previous = None
-    stable = 0
-    for unused in range(20):
-        state = []
-        for path in paths:
-            try:
-                stat = os.stat(path)
-                state.append((path, stat.st_size, stat.st_mtime))
-            except OSError:
-                state.append((path, None, None))
-        if state == previous and all(size for path, size, mtime in state):
-            stable += 1
-            if stable >= 3:
-                return True
-        else:
-            stable = 0
-        previous = state
-        time.sleep(0.5)
-    return False
+def _pfm_files(directory):
+    """Include orphaned PFMs so readiness detects incomplete pairs."""
+    if not os.path.isdir(directory):
+        return []
+    return sorted(os.path.join(directory, name) for name in os.listdir(directory)
+                  if name.lower().endswith(".pfm"))
+
+
+def _describe_pfm_set(directory, expected_pairs):
+    files = _pfm_files(directory)
+    paired_paths = set(path.lower() for pair in _pairs(directory) for path in pair)
+    orphaned = [os.path.basename(path) for path in files if path.lower() not in paired_paths]
+    return "%d/%d complete pairs; %d PFM file(s); unmatched: %s" % (
+        len(_pairs(directory)), expected_pairs, len(files),
+        ", ".join(orphaned) if orphaned else "none")
+
+
+def _file_signature(paths):
+    signature = []
+    for path in paths:
+        try:
+            stat = os.stat(path)
+            signature.append((path, stat.st_size, stat.st_mtime))
+        except OSError:
+            signature.append((path, None, None))
+    return signature
+
+
+def _native_progress_windows():
+    """Return visible exporter-like progress widgets and their real controls."""
+    result = []
+    for widget in _top_widgets():
+        try:
+            class_name = str(widget.metaObject().className())
+            title = str(widget.windowTitle())
+            if "SettingsDialog" in class_name or not (
+                    "Layoff" in class_name or "Progress" in class_name or
+                    "Progress" in title):
+                continue
+            bars = widget.findChildren(QtGui.QProgressBar)
+            cancels = [button for button in widget.findChildren(QtGui.QPushButton)
+                       if str(button.text()).replace("&", "").strip().lower() == "cancel"]
+            result.append({"widget": widget, "class": class_name, "title": title,
+                           "bars": bars, "cancels": cancels,
+                           "cancel_verified": class_name in VERIFIED_NATIVE_CANCEL_CLASSES})
+        except Exception:
+            pass
+    return result
 
 
 def _pfm_dimensions(path):
@@ -336,13 +394,35 @@ class RenderJobPanel(QtGui.QDialog):
         self.setWindowTitle("ModernSFM Render Job")
         self.setMinimumWidth(570)
         self._busy = False
+        self._state = JobStateMachine()
+        self._stage = "Idle"
+        self._manifest_path = None
+        self._job_log_path = None
+        self._job_id = None
         self._render_started = None
         self._session_open_started = None
         self._output_dir = None
         self._expected_frames = 0
         self._last_pair_signature = None
         self._quiet_since = None
+        self._render_no_change_since = None
+        self._last_render_signature = None
         self._render_config = None
+        self._pfm_pairs_observed = 0
+        self._pfm_pairs_stable = 0
+        self._exrs_generated = 0
+        self._processing_frame = None
+        self._last_manifest_progress = None
+        self._native_progress_seen = False
+        self._native_progress_value = None
+        self._native_progress_maximum = None
+        self._last_manifest_progress = None
+        self._cancel_requested = False
+        self._cancel_origin = None
+        self._cancel_requested_at = None
+        self._cancel_quiet_since = None
+        self._cancel_signature = None
+        self._processing_thread = None
         self._make_ui()
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(750)
@@ -351,6 +431,23 @@ class RenderJobPanel(QtGui.QDialog):
         self._session_poll.setInterval(1000)
         self._session_poll.timeout.connect(self._refresh_sfm_state)
         self._session_poll.start()
+        try:
+            roots = set((os.path.abspath(str(self.output.text())),
+                         os.path.join(ROOT, "build", "render_jobs")))
+            recovered = []
+            seen = set()
+            for root in roots:
+                for record in recover_interrupted_jobs(root, os.getpid()):
+                    if record[0] not in seen:
+                        recovered.append(record)
+                        seen.add(record[0])
+            for path, message in recovered:
+                _log("recovered interrupted job %s: %s" % (path, message))
+            if recovered:
+                self.status.setText("Recovered %d interrupted job(s). See their job_status.json and job.log files." %
+                                    len(recovered))
+        except Exception as error:
+            _log("interrupted-job recovery scan failed: %s" % error)
         self._refresh_sfm_state()
 
     def _make_ui(self):
@@ -430,7 +527,10 @@ class RenderJobPanel(QtGui.QDialog):
         actions = QtGui.QHBoxLayout()
         actions.addStretch(1)
         self.start_button = QtGui.QPushButton("Start Render Job")
+        self.cancel_button = QtGui.QPushButton("Cancel Job")
+        self.cancel_button.setEnabled(False)
         self.close_button = QtGui.QPushButton("Close")
+        actions.addWidget(self.cancel_button)
         actions.addWidget(self.start_button)
         actions.addWidget(self.close_button)
         root.addLayout(actions)
@@ -438,6 +538,7 @@ class RenderJobPanel(QtGui.QDialog):
         self.refresh_button.clicked.connect(self._refresh_sessions)
         self.output_button.clicked.connect(self._browse_output)
         self.start_button.clicked.connect(self._start_job)
+        self.cancel_button.clicked.connect(self._cancel_job)
         self.close_button.clicked.connect(self.close)
         self._refresh_sessions()
 
@@ -483,10 +584,83 @@ class RenderJobPanel(QtGui.QDialog):
                        self.memory_mib):
             widget.setEnabled(not busy)
         self.start_button.setEnabled(not busy)
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.setVisible(busy)
         if busy:
             self.progress.show()
         else:
             self.progress.hide()
+
+    def _manifest(self, error=None):
+        if not self._manifest_path or not self._render_config:
+            return
+        manifest = {
+            "job_id": self._job_id,
+            "state": self._state.state,
+            "stage": self._stage,
+            "error": error,
+            "sfm_pid": os.getpid(),
+            "session_source": self._render_config["session"],
+            "session_copy": self._render_config.get("session_copy"),
+            "sfm_session_copy": self._render_config.get("sfm_session_copy"),
+            "output_dir": self._output_dir or self._render_config.get("job_dir"),
+            "start_frame": self._render_config["start"],
+            "end_frame_inclusive": self._render_config["end"],
+            "total_frames": self._expected_frames or
+                            (self._render_config["end"] - self._render_config["start"] + 1),
+            "pfm_pairs_observed": self._pfm_pairs_observed,
+            "pfm_pairs_stable": self._pfm_pairs_stable,
+            "current_processing_frame": self._processing_frame,
+            "exrs_generated": self._exrs_generated,
+            "native_progress_observed": self._native_progress_seen,
+            "native_progress_value": self._native_progress_value,
+            "native_progress_maximum": self._native_progress_maximum,
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        write_manifest(self._manifest_path, manifest)
+
+    def _transition(self, next_state, stage=None, error=None):
+        previous = self._state.state
+        self._state.transition(next_state)
+        self._stage = stage or next_state
+        self._manifest(error)
+        _log("state transition %s -> %s; stage=%s%s" %
+             (previous, next_state, self._stage,
+              "; error=" + str(error) if error else ""))
+        self._update_cancel_enabled()
+
+    def _set_stage(self, stage):
+        self._stage = stage
+        self._manifest()
+        _log("job stage: %s (state=%s)" % (stage, self._state.state))
+
+    def _update_cancel_enabled(self, progress_windows=None):
+        state = self._state.state
+        enabled = state in ("Queued", "Preparing")
+        if state == "Rendering":
+            if progress_windows is None:
+                progress_windows = _native_progress_windows()
+            enabled = (len(progress_windows) == 1 and
+                       progress_windows[0]["cancel_verified"] and
+                       len(progress_windows[0]["cancels"]) == 1 and
+                       progress_windows[0]["cancels"][0].isEnabled())
+        elif state == "Processing":
+            enabled = self._processing_thread is not None and self._processing_thread.isRunning()
+        self.cancel_button.setEnabled(bool(enabled) and not self._cancel_requested)
+
+    def _fail(self, stage, error):
+        message = "Failed during %s: %s" % (stage, error)
+        try:
+            if self._state.state not in ("Failed", "Cancelled", "Completed"):
+                self._transition("Failed", stage, str(error))
+        except Exception as transition_error:
+            _log("could not record Failed transition after %s: %s" % (error, transition_error))
+        self._finish(message)
+
+    def _cancelled(self, message):
+        if self._state.state == "Cancelling":
+            self._transition("Cancelled", "Cancelled")
+        self._finish(message)
 
     def _start_job(self):
         if self._busy:
@@ -555,21 +729,48 @@ class RenderJobPanel(QtGui.QDialog):
             QtGui.QMessageBox.warning(self, "Output already exists",
                                       "A job folder with this timestamp already exists. Wait a second and try again.")
             return
+        try:
+            os.makedirs(config["job_dir"])
+        except Exception as error:
+            self.status.setText("Failed during job preparation: %s" % error)
+            _log("could not create job directory %s: %s" % (config["job_dir"], error))
+            return
         self._render_config = config
+        self._job_id = job_name
+        self._manifest_path = os.path.join(config["job_dir"], "job_status.json")
+        self._job_log_path = os.path.join(config["job_dir"], "job.log")
+        self._output_dir = config["job_dir"]
+        self._expected_frames = count
+        self._pfm_pairs_observed = 0
+        self._pfm_pairs_stable = 0
+        self._exrs_generated = 0
+        self._processing_frame = None
+        self._cancel_requested = False
+        self._cancel_origin = None
+        self._cancel_requested_at = None
+        self._cancel_quiet_since = None
+        self._cancel_signature = None
+        self._last_pair_signature = None
+        self._quiet_since = None
+        self._render_no_change_since = None
+        self._last_render_signature = None
         self._set_busy(True)
+        self._transition("Queued", "Job accepted")
+        self._transition("Preparing", "Preparing disposable session")
         self.status.setText("Opening disposable session copy…")
-        self._log_path = None
         _log("queued selected-session open for %s" % config["session"])
         QtCore.QTimer.singleShot(0, self._open_session)
 
     def _open_session(self):
+        if self._cancel_requested:
+            self._cancelled("Cancelled during preparation. Session files were retained.")
+            return
         config = self._render_config
         try:
             # Preserve the job-local copy for audit/recovery. SFM has loaded
             # disposable copies reliably from its own sessions directory in
             # the Sequence Export POC; opening the output-folder copy here
             # produced delayed materialsystem access violations.
-            os.makedirs(config["job_dir"])
             config["session_copy"] = os.path.join(config["job_dir"], "session_copy.dmx")
             shutil.copyfile(config["session"], config["session_copy"])
             config["sfm_session_copy"] = os.path.join(
@@ -578,6 +779,7 @@ class RenderJobPanel(QtGui.QDialog):
                 raise RuntimeError("disposable SFM session already exists: %s" %
                                    config["sfm_session_copy"])
             shutil.copyfile(config["session_copy"], config["sfm_session_copy"])
+            self._manifest()
             wizard = _initial_session_wizard()
             if wizard is not None:
                 raise RuntimeError("SFM startup wizard is still open; open a session and retry")
@@ -586,12 +788,16 @@ class RenderJobPanel(QtGui.QDialog):
                  (config["sfm_session_copy"], config["session_copy"], opened))
             if opened is False or opened is None:
                 raise RuntimeError("SFM did not open the selected session")
+            self._set_stage("Waiting for disposable session to load")
             self._session_open_started = time.time()
             QtCore.QTimer.singleShot(1000, self._wait_for_document)
         except Exception as error:
-            self._finish("Failed to open selected session: %s" % error)
+            self._fail("session preparation", error)
 
     def _wait_for_document(self):
+        if self._cancel_requested:
+            self._cancelled("Cancelled during session preparation. Session copies were retained.")
+            return
         expected = os.path.basename(self._render_config["sfm_session_copy"]).lower()
         loaded = False
         for widget in QtGui.QApplication.instance().topLevelWidgets():
@@ -608,15 +814,22 @@ class RenderJobPanel(QtGui.QDialog):
             self._schedule_exporter_launch()
             return
         if time.time() - self._session_open_started >= 60:
-            self._finish("SFM did not confirm the selected session copy as loaded within 60 seconds")
+            self._fail("session preparation", "SFM did not confirm the selected session copy as loaded within 60 seconds")
             return
         QtCore.QTimer.singleShot(2000, self._wait_for_document)
 
     def _schedule_exporter_launch(self):
+        if self._cancel_requested:
+            self._cancelled("Cancelled before native exporter launch. Session copies were retained.")
+            return
+        self._set_stage("Preparing native Sequence Exporter")
         _log("queued Sequence Exporter launch after document load")
         QtCore.QTimer.singleShot(12000, self._launch_exporter)
 
     def _launch_exporter(self):
+        if self._cancel_requested:
+            self._cancelled("Cancelled before native exporter launch. Session copies were retained.")
+            return
         _log("launching the native Sequence Exporter")
         try:
             self._output_dir = self._render_config["job_dir"]
@@ -638,9 +851,12 @@ class RenderJobPanel(QtGui.QDialog):
                     return
             raise RuntimeError("native Export Movie action not found")
         except Exception as error:
-            self._finish("Failed to start Sequence Exporter: %s" % error)
+            self._fail("SFM exporter startup", error)
 
     def _configure_exporter(self):
+        if self._cancel_requested:
+            self._cancelled("Cancelled before native exporter configuration. Session copies were retained.")
+            return
         try:
             dialog = _find_export_dialog()
             if dialog is None:
@@ -678,72 +894,190 @@ class RenderJobPanel(QtGui.QDialog):
                     break
             if export_button is None:
                 raise RuntimeError("enabled Export Movie button not found")
+            self._transition("Rendering", "SFM rendering")
             self.status.setText("SFM rendering: waiting for %d Beauty/Depth pair(s)…" % self._expected_frames)
             export_button.click()
             self._timer.start()
         except Exception as error:
-            self._finish("Failed to configure Sequence Exporter: %s" % error)
+            self._fail("SFM exporter configuration", error)
+
+    def _cancel_job(self):
+        state = self._state.state
+        if state in ("Queued", "Preparing"):
+            self._cancel_requested = True
+            self._transition("Cancelling", "Cancelling before render")
+            self._cancelled("Cancelled before rendering. Any session copies were retained.")
+            return
+        if state == "Rendering":
+            windows = _native_progress_windows()
+            if (len(windows) != 1 or not windows[0]["cancel_verified"] or
+                    len(windows[0]["cancels"]) != 1 or
+                    not windows[0]["cancels"][0].isEnabled()):
+                self.cancel_button.setEnabled(False)
+                self.status.setText("SFM render cancellation is unavailable: no live-verified native Cancel control. Rendering continues.")
+                return
+            self._cancel_requested = True
+            self._cancel_origin = "rendering"
+            self._cancel_requested_at = time.time()
+            self._cancel_quiet_since = None
+            self._cancel_signature = None
+            self._transition("Cancelling", "Cancelling native SFM exporter")
+            try:
+                windows[0]["cancels"][0].click()
+                _log("activated the native Cancel button in %s (%s)" %
+                     (windows[0]["class"], windows[0]["title"]))
+                self.status.setText("Cancelling SFM render; waiting for the native progress window to close…")
+            except Exception as error:
+                self._fail("SFM render cancellation", error)
+            return
+        if state == "Processing" and self._processing_thread is not None:
+            self._cancel_requested = True
+            self._cancel_origin = "processing"
+            self._transition("Cancelling", "Finishing current EXR before cancellation")
+            self._processing_thread.request_cancel()
+            self.status.setText("Cancelling after the current EXR; no further frames will be submitted.")
+            return
+
+    def _cancel_render_poll(self, progress_windows, signature):
+        if time.time() - self._cancel_requested_at > 30.0:
+            self._fail("SFM render cancellation", "native exporter did not close within 30 seconds")
+            return True
+        if progress_windows:
+            self.status.setText("Cancelling SFM render; native progress window is still open…")
+            return True
+        if signature != self._cancel_signature:
+            self._cancel_signature = signature
+            self._cancel_quiet_since = time.time()
+        elif self._cancel_quiet_since is None:
+            self._cancel_quiet_since = time.time()
+        if (self._cancel_quiet_since is not None and
+                time.time() - self._cancel_quiet_since >= 2.0 and
+                time.time() - self._cancel_requested_at >= 2.0):
+            partial = len(_pairs(self._output_dir))
+            self._cancelled("Cancelled during SFM rendering. %d stable PFM pair(s) retained; no EXRs were submitted." %
+                            partial)
+        return True
 
     def _poll(self):
         try:
             pairs = _pairs(self._output_dir)
             if len(pairs) > self._expected_frames:
                 raise RuntimeError("exporter produced more pairs than requested; PFMs retained")
-            paths = [path for pair in pairs for path in pair]
-            signature = []
-            for path in paths:
-                stat = os.stat(path)
-                signature.append((path, stat.st_size, stat.st_mtime))
-            if paths and signature == self._last_pair_signature:
+            paths = _pfm_files(self._output_dir)
+            signature = _file_signature(paths)
+            if paths and signature == self._last_render_signature:
+                if self._render_no_change_since is None:
+                    self._render_no_change_since = time.time()
+            else:
+                self._last_render_signature = signature
+                self._render_no_change_since = time.time()
+            pair_paths = [path for pair in pairs for path in pair]
+            pair_signature = _file_signature(pair_paths)
+            if pair_paths and pair_signature == self._last_pair_signature:
                 if self._quiet_since is None:
                     self._quiet_since = time.time()
             else:
-                self._last_pair_signature = signature
-                self._quiet_since = time.time() if paths else None
+                self._last_pair_signature = pair_signature
+                self._quiet_since = time.time() if pair_paths else None
 
-            progress_open = False
-            for widget in _top_widgets():
-                class_name = str(widget.metaObject().className())
-                title = str(widget.windowTitle())
-                if "SettingsDialog" not in class_name and (
-                        "Layoff" in class_name or "Progress" in class_name or "Progress" in title):
-                    progress_open = True
-                    bars = widget.findChildren(QtGui.QProgressBar)
-                    if bars:
-                        self.status.setText("SFM rendering… native progress %d/%d" %
-                                            (bars[0].value(), bars[0].maximum()))
-                    break
+            self._pfm_pairs_observed = len(pairs)
+            progress_windows = _native_progress_windows()
+            progress_open = bool(progress_windows)
+            self._update_cancel_enabled(progress_windows)
+            if progress_windows:
+                if not self._native_progress_seen:
+                    self._native_progress_seen = True
+                    _log("observed SFM progress widget: %s title=%r; cancel buttons=%d" %
+                         (progress_windows[0]["class"], progress_windows[0]["title"],
+                          len(progress_windows[0]["cancels"])))
+                bars = progress_windows[0]["bars"]
+                if bars:
+                    bar = bars[0]
+                    self._native_progress_value = int(bar.value())
+                    self._native_progress_maximum = int(bar.maximum())
+                    if bar.maximum() > 0:
+                        self.progress.setRange(int(bar.minimum()), int(bar.maximum()))
+                        self.progress.setValue(int(bar.value()))
+                    else:
+                        self.progress.setRange(0, 0)
+                    self.status.setText("SFM native progress %d/%d; %d PFM pair(s) observed; %d/%d EXRs validated" %
+                                        (bar.value(), bar.maximum(), len(pairs),
+                                         self._exrs_generated, self._expected_frames))
+                else:
+                    self.status.setText("SFM rendering; %d PFM pair(s) observed; %d/%d EXRs validated" %
+                                        (len(pairs), self._exrs_generated, self._expected_frames))
+            else:
+                self._native_progress_value = None
+                self._native_progress_maximum = None
+                self.progress.setRange(0, 0)
+                self.status.setText("SFM rendering; %d PFM pair(s) observed (not yet confirmed complete); %d/%d EXRs validated" %
+                                    (len(pairs), self._exrs_generated, self._expected_frames))
+
+            progress_snapshot = (self._pfm_pairs_observed,
+                                 self._native_progress_value,
+                                 self._native_progress_maximum)
+            if progress_snapshot != self._last_manifest_progress:
+                self._last_manifest_progress = progress_snapshot
+                self._manifest()
+
+            if self._state.state == "Cancelling" and self._cancel_origin == "rendering":
+                self._cancel_render_poll(progress_windows, signature)
+                return
 
             elapsed = time.time() - self._render_started
             enough = len(pairs) == self._expected_frames
             quiet = self._quiet_since is not None and time.time() - self._quiet_since >= 3.0
-            stable = _ready(paths) if enough else False
+            stable = bool(paths) and all(item[1] for item in signature)
             if enough and quiet and stable and not progress_open:
                 self._timer.stop()
+                self._pfm_pairs_stable = len(pairs)
                 self.status.setText("Expected PFM pairs are stable. Checking dimensions…")
                 QtCore.QTimer.singleShot(0, self._process_pairs)
                 return
+            # The progress dialog was absent in the successful SFM run, so
+            # absence alone cannot distinguish completion from an exporter
+            # fault. If output has stopped changing for a full minute while
+            # the requested set is incomplete, fail with the exact observed
+            # file set instead of silently waiting for the five-minute limit.
+            no_change = (self._render_no_change_since is not None and
+                         time.time() - self._render_no_change_since >= 60.0)
+            no_output_for = (not paths and self._render_started is not None and
+                             time.time() - self._render_started >= 60.0)
+            if (not progress_open and len(pairs) < self._expected_frames and
+                    (no_change or no_output_for)):
+                self._timer.stop()
+                self._fail("PFM output readiness",
+                           "export output stopped before all expected frames were written: %s" %
+                           _describe_pfm_set(self._output_dir, self._expected_frames))
+                return
             if elapsed > MAX_RENDER_SECONDS:
                 self._timer.stop()
-                raise RuntimeError("%d-second render watchdog expired; any PFM files were retained" %
-                                   MAX_RENDER_SECONDS)
-            self.status.setText("SFM render: %d/%d Beauty/Depth pairs found%s" %
-                                (len(pairs), self._expected_frames,
-                                 "; awaiting stable files" if pairs else ""))
+                self._fail("SFM exporter completion",
+                           "%d-second watchdog expired; %s; any output was retained" %
+                           (MAX_RENDER_SECONDS,
+                            _describe_pfm_set(self._output_dir, self._expected_frames)))
+                return
         except Exception as error:
             self._timer.stop()
-            self._finish("Render monitoring failed: %s. Any PFMs were retained." % error)
+            self._fail("SFM render monitoring", error)
 
     def _process_pairs(self):
-        bridge = None
+        failed_stage = "PFM input validation"
         try:
+            if self._cancel_requested:
+                self._cancelled("Cancelled before EXR processing. PFM sources were retained.")
+                return
             pairs = _pairs(self._output_dir)
             if len(pairs) != self._expected_frames:
                 raise RuntimeError("expected %d complete pairs, found %d" %
                                    (self._expected_frames, len(pairs)))
-            paths = [path for pair in pairs for path in pair]
-            if not _ready(paths):
-                raise RuntimeError("PFM sizes and timestamps did not stabilize")
+            paths = _pfm_files(self._output_dir)
+            signature = _file_signature(paths)
+            if not paths or len(signature) != self._expected_frames * 2 or \
+                    not all(item[1] for item in signature):
+                raise RuntimeError("expected exactly %d nonempty Beauty/Depth PFM files; found %d (%s)" %
+                                   (self._expected_frames * 2, len(paths),
+                                    _describe_pfm_set(self._output_dir, self._expected_frames)))
             for index, (beauty, depth) in enumerate(pairs):
                 beauty_size = _pfm_dimensions(beauty)
                 depth_size = _pfm_dimensions(depth)
@@ -756,42 +1090,62 @@ class RenderJobPanel(QtGui.QDialog):
                                        (index, beauty_size, expected_size))
                 _log("frame %d PFM headers verified: Beauty=%r Depth=%r" %
                      (index, beauty_size, depth_size))
-            self.status.setText("PFM pairs match %dx%d. Worker is validating EXRs…" %
-                                (self._render_config["width"], self._render_config["height"]))
-            QtGui.QApplication.instance().processEvents()
-            bridge = _load_bridge()
-            for index, pair in enumerate(pairs):
-                beauty, depth = pair
-                before = (_sha256(beauty), _sha256(depth))
-                output = os.path.splitext(beauty)[0] + ".exr"
-                message = _pack(bridge, beauty, depth, output,
-                                self._render_config["memory_mib"])
-                if not os.path.isfile(output) or os.path.getsize(output) <= 0:
-                    raise RuntimeError("frame %d EXR is missing or empty after Worker response" % index)
-                after = (_sha256(beauty), _sha256(depth))
-                if before != after:
-                    raise RuntimeError("source PFM changed during Worker processing")
-                self.status.setText("Worker validated EXR %d/%d" % (index + 1, len(pairs)))
-                QtGui.QApplication.instance().processEvents()
-                _log(message)
-            _log("job completed: %d EXR frame(s); all source PFMs retained" % len(pairs))
-            self._finish("Completed: %d EXR frame(s) validated. Source PFMs were retained.\n\n%s" %
-                         (len(pairs), self._output_dir))
+            failed_stage = "Worker startup"
+            self._set_stage("Starting x64 Worker")
+            self.progress.setRange(0, self._expected_frames)
+            self.progress.setValue(self._exrs_generated)
+            self._transition("Processing", "Starting x64 Worker")
+            thread = ExrProcessingThread(pairs, self._render_config["memory_mib"],
+                                         _load_bridge, _pack, _sha256, self)
+            thread.frame_started.connect(self._on_worker_frame_started)
+            thread.frame_validated.connect(self._on_worker_frame_validated)
+            thread.result_ready.connect(self._on_worker_result)
+            self._processing_thread = thread
+            self._set_stage("x64 Worker is processing EXR frames")
+            self.status.setText("EXR processing: 0/%d validated" % self._expected_frames)
+            thread.start()
         except Exception as error:
-            self._finish("Worker processing failed: %s. Source PFMs were retained." % error)
-        finally:
-            if bridge is not None:
-                try:
-                    result = bridge.shutdown(10000)
-                    if result != 0:
-                        _log("Bridge shutdown returned %d: %s" % (result, _last_error(bridge)))
-                except Exception as error:
-                    _log("Bridge shutdown error: %s" % error)
+            self._fail(failed_stage, error)
+
+    def _on_worker_frame_started(self, frame_number, total):
+        self._processing_frame = frame_number
+        self._set_stage("Worker processing frame %d/%d" % (frame_number, total))
+        self.status.setText("EXR processing: frame %d/%d; %d EXR(s) validated" %
+                            (frame_number, total, self._exrs_generated))
+
+    def _on_worker_frame_validated(self, frame_number, total, message):
+        self._exrs_generated = frame_number
+        self._processing_frame = None
+        _log(message)
+        self._set_stage("Worker validated EXR %d/%d" % (frame_number, total))
+        self.progress.setRange(0, total)
+        self.progress.setValue(self._exrs_generated)
+        self.status.setText("EXR processing: %d/%d validated" % (self._exrs_generated, total))
+
+    def _on_worker_result(self, outcome, completed, failed_stage, error_text):
+        self._exrs_generated = completed
+        self._processing_frame = None
+        if outcome == "Completed" and self._state.state == "Processing":
+            self._transition("Completed", "Completed")
+            _log("job completed: %d EXR frame(s); all source PFMs retained" % completed)
+            self._finish("Completed: %d EXR frame(s) validated. Source PFMs were retained.\n\n%s" %
+                         (completed, self._output_dir))
+        elif outcome == "Cancelled" and self._state.state == "Cancelling":
+            self._cancelled("Cancelled during EXR processing after %d validated frame(s). "
+                            "No further frames were submitted; PFMs and partial EXRs were retained." %
+                            completed)
+        elif outcome == "Failed":
+            self._fail(failed_stage or "Worker processing", error_text or "unspecified Worker failure")
+        else:
+            self._fail("Render Job state handling",
+                       "Worker finished with outcome %s while job state was %s" %
+                       (outcome, self._state.state))
 
     def _finish(self, message):
         self._timer.stop()
         self._set_busy(False)
         self.status.setText(message)
+        self._manifest()
         _log(message.replace("\n", " | "))
 
 
