@@ -34,5 +34,6 @@ Python orchestrates the workflow. The Bridge owns Worker lifecycle and local IPC
 
 - [Architecture](ARCHITECTURE.md): boundaries, data pipeline, open questions, compatibility, and future architecture proposals.
 - [Roadmap](ROADMAP.md): phased investigations and development gates.
+- [Phase 0 Evidence](PHASE0_EVIDENCE.md): real-frame observations, cited research, hypotheses, unknowns, and calibration tests.
 
 The documents distinguish confirmed architecture from proposals and unresolved questions. Future capabilities such as frame-range processing, multiple Workers, and multi-instance SFM rendering are not implemented or approved for immediate development.

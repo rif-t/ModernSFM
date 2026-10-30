@@ -2,16 +2,18 @@
 
 ## Status and sequencing
 
-The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains fixed: SFM Python x86 → Bridge DLL x86 → separate Worker x64. The standalone synthetic-data subset of Phase 1 is implemented and verified; Phase 0 evidence gathering and all integration phases remain pending.
+The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains fixed: SFM Python x86 → Bridge DLL x86 → separate Worker x64. The standalone synthetic-data subset of Phase 1 is implemented and verified, and one real frame pair has passed the Worker round-trip. Phase 0 semantics and integration questions remain open; see [Phase 0 Evidence](PHASE0_EVIDENCE.md). Bridge and SFM integration have not started.
 
 ## Phase 0 — Evidence and architecture validation
 
 **Goal:** resolve the data and integration assumptions that block implementation.
 
-- Collect representative SFM beauty and depth PFM files with provenance.
-- Document PFM headers, payload, channel count, dimensions, scale/endian, row order, value range, and incomplete-file behavior.
+**Status:** partial. One 3840×2160 real beauty/depth pair has been parsed and round-tripped with top-to-bottom row orientation confirmed by the user. Beauty contains values above 1; depth contains large finite values that may be sentinels. Valve documents Source HDR processing and the existence/purpose of SFM's depth-PFM option, but public information found does not define the SFM PFM export transforms or depth equation. See [Phase 0 Evidence](PHASE0_EVIDENCE.md).
+
+- Expand the one collected SFM beauty/depth pair to representative scenes and settings.
+- Verify which PFM header/payload, channel, scale/endian, and row-orientation properties are stable across frames.
 - Establish beauty color characteristics and whether scene-linear interpretation is justified.
-- Establish depth encoding, range/units, background value, and alignment with beauty.
+- Establish depth encoding, range/units, background value, and alignment with beauty using the calibration tests in [Phase 0 Evidence](PHASE0_EVIDENCE.md).
 - Identify and verify an SFM render-completion signal; inspect actual workflow/API behavior without inventing undocumented APIs.
 - Treat the installed `modern_sfm_frontend.py` as a user-confirmed non-working legacy prototype. Record useful behavior and reported failures, but cleanly rewrite render orchestration in this repository after its boundary is clear; do not port the mixed viewport implementation or edit the installed copy.
 - Test x86 native binding options inside this SFM installation's embedded Python 2.7; evaluate `ctypes` first and retain a CPython extension as alternative.
@@ -127,7 +129,7 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 ## Key unresolved risks
 
 1. A reliable supported SFM render-completion signal has not been established.
-2. The real beauty/depth PFM format and color/depth semantics have not been inspected.
+2. Only one real beauty/depth PFM pair has been inspected; beauty color/depth semantics remain unknown.
 3. Bridge loading through `ctypes` in SFM's embedded Python 2.7 remains unverified.
 4. The initial EXR schema and transform metadata remain proposals.
 5. Multi-instance rendering may require patching `launcher.dll`; safety, version stability, and necessity are unverified.

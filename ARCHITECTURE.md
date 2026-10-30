@@ -86,7 +86,7 @@ The SFM installation contains `game/usermod/scripts/sfm/mainmenu/modern_sfm_fron
 
 Read-only inspection shows that it configures SFM `movieSettings` for PFM output and optional depth, triggers the Export Movie UI, polls for a layoff progress dialog, and writes a `done.sentinel` when the dialog closes after being observed or when a frame count reaches the requested total. It also launches a configured `ModernSFM.exe --watch` through `rm_*` functions exposed by an x86 DLL. This is an existing prototype's behavior, not a verified SFM API contract. Dialog disappearance can also follow cancellation or failure, so the sentinel path is not sufficient evidence of successful render completion without further verification.
 
-The script combines render controls with a viewport bridge, has machine-specific absolute build paths, and references `render_manager.cpp`, an x86 DLL, and an x64 executable that were not present in the inspected ModernSFM project directory. No generated PFM samples or RAM ingest directory were found in the checked locations. The clean rewrite should live in the ModernSFM repository and target the agreed render pipeline first; viewport work stays out of scope unless separately approved.
+The script combines render controls with a viewport bridge, has machine-specific absolute build paths, and references `render_manager.cpp`, an x86 DLL, and an x64 executable that were not present in the inspected ModernSFM project directory. No generated PFM samples or RAM ingest directory were found during that initial inspection; the owner later provided one real beauty/depth pair, recorded in [Phase 0 Evidence](PHASE0_EVIDENCE.md). The clean rewrite should live in the ModernSFM repository and target the agreed render pipeline first; viewport work stays out of scope unless separately approved.
 
 Required investigation:
 
@@ -109,7 +109,7 @@ Streaming a completed frame while SFM renders later frames is a possible optimiz
 
 ## PFM format and data semantics
 
-No PFM sample from the user's SFM workflow has yet been inspected. Do not assume beauty is scene-linear or that depth is compositing-ready Z.
+One user-rendered SFM beauty/depth pair has been inspected and round-tripped. See [Phase 0 Evidence](PHASE0_EVIDENCE.md) for its binary layout, sample ranges, cited research, hypotheses, and tests still needed. Do not assume beauty is scene-linear or that depth is compositing-ready Z.
 
 The eventual parser must validate:
 
@@ -120,9 +120,9 @@ The eventual parser must validate:
 - Row orientation and correct alignment between beauty and depth.
 - Non-finite values (NaN and infinity) and invalid headers, with a defined reject/report policy.
 
-Inspect actual SFM beauty and depth files to establish their binary layout, scale/endian behavior, row order, channels, and representative value ranges.
+The current pair establishes layout, scale/endian behavior, row order, channels, and sample ranges for one render only. Inspect more frames/settings to establish which details are stable.
 
-For depth, explicitly determine whether values are linear camera-space distance or nonlinear depth-buffer values, their units/range, background encoding, orientation, and pixel alignment with beauty. Only after these checks can the project decide whether the values are useful as a compositing Z-pass or require conversion/metadata. Do not label depth as camera distance without evidence.
+For depth, explicitly determine whether values are linear camera-space distance, Euclidean distance, nonlinear depth-buffer values, normalized/inverse depth, or another representation; determine units/range, background encoding, orientation, and pixel alignment with beauty. Valve confirms the export option was added for compositing, but public release notes do not define its numeric encoding. Do not treat the community-reported 192-unit range as a far-plane distance. Do not label depth as camera distance without calibration evidence.
 
 ## Image and color pipeline
 
@@ -144,7 +144,7 @@ depth.Z
 image-final.R, image-final.G, image-final.B
 ```
 
-These names are placeholders; do not treat them as the agreed schema. Final decisions require inspection of input channels and depth semantics. Still to decide: layer/channel naming, whether depth is one channel or another representation, HALF versus FLOAT, compression, metadata, color-space declarations, and data/display windows.
+The standalone Phase 1 Worker currently writes these names as a provisional verification schema; they are not a finalized product contract. Final decisions require inspection of input channels and depth semantics. Still to decide: layer/channel naming, whether depth is one channel or another representation, HALF versus FLOAT, compression, metadata, color-space declarations, and data/display windows.
 
 For correctness work, **proposed default: FLOAT** to avoid introducing half-float quantization while comparing input and output values. Evaluate HALF as a configurable option later. Select compression and color metadata only after data semantics are known. Validation must confirm dimensions, channels, layers, metadata contract, and preservation of the original values within the selected format's defined precision.
 
@@ -265,7 +265,7 @@ Detailed sequencing and pass/fail gates are tracked in [ROADMAP.md](ROADMAP.md).
 
 ## Prioritized investigations before implementation
 
-1. Obtain representative beauty/depth PFM files from this SFM installation and document binary structure, value ranges, color characteristics, row orientation, and depth semantics.
+1. Expand the one-frame sample set across scenes and render settings; the current pair's binary structure, range, and row orientation are documented, while color characteristics and depth semantics remain unresolved.
 2. Establish a real SFM render-completion signal and interruption behavior from inspected interfaces or controlled observation. This currently blocks reliable orchestration.
 3. Test native binding feasibility inside SFM's embedded Python 2.7; compare `ctypes` against a CPython extension and select one based on evidence.
 4. Finalize the EXR schema and precision/compression/metadata after input semantics are known.
@@ -275,7 +275,7 @@ Detailed sequencing and pass/fail gates are tracked in [ROADMAP.md](ROADMAP.md).
 
 ## Assumptions still requiring evidence
 
-- The SFM render/export flow can produce paired beauty and depth PFM files with matching dimensions and timing.
+- One SFM render produced a beauty/depth PFM pair with matching dimensions. Reliable pairing/completion behavior across exports and frames remains unverified.
 - The embedded SFM Python environment can load a separately built x86 Bridge through a supported binding mechanism.
 - A dependable completion signal is accessible to Python or the Bridge without a fragile file-stability heuristic.
 - The Worker can locate and access the same paths visible to SFM, including Unicode/long paths where required.
@@ -284,8 +284,8 @@ Detailed sequencing and pass/fail gates are tracked in [ROADMAP.md](ROADMAP.md).
 
 ## Verification plan and pass/fail criteria
 
-1. **Collect representative files:** obtain beauty and depth PFMs from a known SFM render; pass only when both files are available with recorded provenance and dimensions.
-2. **Document binary structure and semantics:** independently inspect headers/payloads and value ranges; pass only when channel count, scale/endian, row order, completeness, beauty color interpretation, and depth meaning are recorded or explicitly marked unknown.
+1. **Collect representative files:** partially passed for one known SFM render pair; collect multiple frames/settings before generalizing.
+2. **Document binary structure and semantics:** binary layout, sample values, and row order are recorded for one pair in [Phase 0 Evidence](PHASE0_EVIDENCE.md); beauty color interpretation and depth meaning remain explicitly unknown pending calibration.
 3. **Strict PFM parser:** exercise valid and malformed inputs; pass only when valid inputs decode deterministically and bad magic, dimensions, scale, truncation, non-finite values, and mismatched files fail with clear errors and no out-of-bounds access.
 4. **Multi-layer EXR:** write/reopen a known synthetic fixture; pass only when expected dimensions/channels and selected data types are present and values match the expected result.
 5. **`raw-sfm` preservation:** compare decoded source values with the EXR raw layer; pass only within documented precision (exact for FLOAT when the source values are representable and no transform is applied).
