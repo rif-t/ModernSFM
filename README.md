@@ -1,22 +1,35 @@
 # ModernSFM
 
-ModernSFM is a planned rendering and post-processing pipeline for Source Filmmaker. SFM remains responsible for scene creation and rendering; ModernSFM is intended to process SFM beauty/depth PFM outputs into validated multilayer OpenEXR files.
+ModernSFM is a rendering and post-processing prototype for Source Filmmaker. SFM remains responsible for scene creation and rendering; ModernSFM is intended to process SFM beauty/depth PFM outputs into validated multilayer OpenEXR files.
 
 ## Project status
 
-The repository contains the architecture documents and a standalone x64 Worker milestone. The Worker strictly parses a paired RGB beauty PFM and single-channel depth PFM, writes a multilayer FLOAT OpenEXR, reopens it, and checks channel types, dimensions, and sample values. It keeps the top-to-bottom row order observed in an SFM render. The `image-final` layer is currently an identity copy of `raw-sfm`; no color-space interpretation is asserted. Source PFMs are preserved.
+The repository contains a standalone x64 Worker and a first x86 Bridge prototype. The Worker strictly parses a paired RGB beauty PFM and single-channel depth PFM, writes a multilayer FLOAT OpenEXR, reopens it, and checks channel types, dimensions, and sample values. It keeps the top-to-bottom row order observed in an SFM render. The `image-final` layer is currently an identity copy of `raw-sfm`; no color-space interpretation is asserted. Source PFMs are preserved.
 
-The Worker has passed synthetic tests and processed one real SFM frame pair. It does not include the x86 Bridge DLL, Python orchestration, SFM integration, color transforms, effects, batching, or cleanup. Color and depth semantics remain unverified.
+The Worker has passed synthetic tests and processed one real SFM frame pair. The x86 Bridge starts the x64 Worker through a local named pipe and forwards a small test protocol. The Python 2.7 smoke script has passed under both the bundled 32-bit interpreter and the live SFM embedded interpreter. Render orchestration, PFM processing through the Bridge, color transforms, effects, batching, and cleanup are not implemented yet. Color and depth semantics remain unverified.
 
 ## Build and verify
 
-Use Visual Studio 2022 or newer with the x64 C++ workload, CMake, and vcpkg. The project manifest installs OpenEXR.
+Use Visual Studio 2022 or newer with x86 and x64 C++ workloads, CMake, and vcpkg. The x64 Worker uses OpenEXR; the Bridge has no image-processing dependencies.
 
 ```powershell
-cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=<vcpkg-root>/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows
-cmake --build build --config Release
-ctest --test-dir build -C Release --output-on-failure
+$env:VCPKG_ROOT = "D:/vcpkg" # set this to your vcpkg checkout
+cmake -S . -B build/x64 -G "Visual Studio 18 2026" -A x64 `
+  -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+  -DVCPKG_TARGET_TRIPLET=x64-windows `
+  -DMODERNSFM_BUILD_WORKER=ON -DMODERNSFM_BUILD_BRIDGE=OFF
+cmake --build build/x64 --config Release
+ctest --test-dir build/x64 -C Release --output-on-failure
+
+cmake -S . -B build/x86 -G "Visual Studio 18 2026" -A Win32 `
+  -DMODERNSFM_BUILD_WORKER=OFF -DMODERNSFM_BUILD_BRIDGE=ON -DBUILD_TESTING=OFF
+cmake --build build/x86 --config Release
+
+# Verify the Bridge + Worker round trip in bundled x86 Python 2.7:
+& "<SFM-root>/game/sdktools/python/2.7/win32/python.exe" scripts/sfm_bridge_smoke.py
 ```
+
+To run in SFM itself, launch `sfm.exe -game usermod -sfm_startup_script "<ModernSFM-root>/scripts/sfm_bridge_smoke.py" -condebug -console`. The script writes `build/sfm_bridge_smoke_result.txt` and prints results to SFM's Python output.
 
 The standalone command is `modern_sfm_worker pack --beauty <RGB.pfm> --depth <Z.pfm> --output <result.exr> [--max-memory-mib <MiB>]`. Existing output files are never overwritten.
 
@@ -28,7 +41,7 @@ SFM Python (x86 / Python 2.7)
         -> ModernSFM Worker (x64 process)
 ```
 
-Python orchestrates the workflow. The Bridge owns Worker lifecycle and local IPC. The x64 Worker performs PFM parsing, image processing, and EXR generation. Image buffers stay out of Python, the Bridge, and IPC.
+Python orchestrates the workflow. The Bridge owns Worker lifecycle and local IPC. The x64 Worker performs PFM parsing, image processing, and EXR generation. Image buffers stay out of Python, the Bridge, and IPC. The current Bridge protocol supports only `PING`, `ECHO`, and graceful `QUIT`; render jobs and batch states are not implemented.
 
 ## Documentation
 

@@ -1,29 +1,51 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(ModernSFMWorker VERSION 0.1.0 LANGUAGES CXX)
+project(ModernSFM VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(OpenEXR CONFIG REQUIRED)
+option(MODERNSFM_BUILD_WORKER "Build the standalone x64 Worker" ON)
+option(MODERNSFM_BUILD_BRIDGE "Build the x86 SFM Bridge DLL" ON)
 
-add_executable(modern_sfm_worker
-    src/worker/main.cpp
-    src/worker/pfm.cpp
-    src/worker/exr_pack.cpp
-)
+if(MODERNSFM_BUILD_WORKER)
+    if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+        message(FATAL_ERROR "ModernSFM Worker must be configured for 64-bit (x64)")
+    endif()
+    find_package(OpenEXR CONFIG REQUIRED)
 
-target_include_directories(modern_sfm_worker PRIVATE include)
-target_link_libraries(modern_sfm_worker PRIVATE OpenEXR::OpenEXR)
-
-if(MSVC)
-    target_compile_options(modern_sfm_worker PRIVATE /W4 /permissive- /EHsc)
+    add_executable(modern_sfm_worker
+        src/worker/main.cpp
+        src/worker/pfm.cpp
+        src/worker/exr_pack.cpp
+        src/worker/pipe_worker.cpp
+    )
+    target_include_directories(modern_sfm_worker PRIVATE include src/worker)
+    target_link_libraries(modern_sfm_worker PRIVATE OpenEXR::OpenEXR)
     target_compile_definitions(modern_sfm_worker PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    if(MSVC)
+        target_compile_options(modern_sfm_worker PRIVATE /W4 /permissive- /EHsc)
+    endif()
+endif()
+
+if(MODERNSFM_BUILD_BRIDGE)
+    if(NOT WIN32)
+        message(FATAL_ERROR "ModernSFM Bridge currently requires Windows")
+    endif()
+    if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+        message(FATAL_ERROR "ModernSFM Bridge must be configured for 32-bit (Win32)")
+    endif()
+    add_library(modern_sfm_bridge SHARED src/bridge/modern_sfm_bridge.cpp)
+    target_include_directories(modern_sfm_bridge PRIVATE include)
+    target_compile_definitions(modern_sfm_bridge PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    if(MSVC)
+        target_compile_options(modern_sfm_bridge PRIVATE /W4 /permissive- /EHsc)
+    endif()
 endif()
 
 include(CTest)
-if(BUILD_TESTING)
+if(BUILD_TESTING AND MODERNSFM_BUILD_WORKER)
     add_executable(pfm_orientation_test
         tests/pfm_orientation.cpp
         src/worker/pfm.cpp

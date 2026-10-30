@@ -1,5 +1,6 @@
 #include "modern_sfm/exr_pack.hpp"
 #include "modern_sfm/pfm.hpp"
+#include "pipe_worker.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -80,6 +81,10 @@ Arguments parse_arguments(int argc, char* argv[]) {
 }
 
 int run(int argc, char* argv[]) {
+    if (argc == 3 && std::string(argv[1]) == "--pipe") {
+        const std::string narrow_pipe_name = argv[2];
+        return run_pipe_worker(std::wstring(narrow_pipe_name.begin(), narrow_pipe_name.end()));
+    }
     const Arguments arguments = parse_arguments(argc, argv);
     const std::uint64_t budget_bytes = arguments.max_memory_mib * kMiB;
 

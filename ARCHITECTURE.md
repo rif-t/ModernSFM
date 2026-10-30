@@ -2,13 +2,13 @@
 
 ## Document status
 
-This is an architecture specification, not an implementation plan authorization. No system implementation has started. Terms used below:
+This document records implemented behavior and the remaining architecture. Terms used below:
 
 - **Confirmed** means explicitly required by the project owner.
 - **Proposed** means a recommended design that still needs verification or approval.
 - **Unresolved** means evidence or a decision is still required.
 
-The repository currently contains architecture documentation only; there are no implementation files to describe as existing behavior. The process design below is an agreed architectural boundary, not a claim that components have been built or verified.
+The x64 PFM-to-EXR Worker is implemented. A minimal x86 Bridge-to-x64 Worker Named Pipe prototype is also implemented and has passed a live SFM embedded-Python smoke run. Rendering handoff, batch processing, and PFM-to-EXR calls through the Bridge remain unimplemented.
 
 ## Purpose and scope
 
@@ -53,7 +53,19 @@ The three components have mandatory process and bitness boundaries:
 
 The x64 Worker must never be loaded into SFM's x86 process. The Bridge is not the processing engine. This architecture must not be replaced by direct Python process launching or by moving processing into the Bridge.
 
-## Job workflow
+## Implemented IPC smoke workflow
+
+The current vertical slice is a transport/lifecycle proof only:
+
+1. SFM launches `scripts/sfm_bridge_smoke.py` as its Python 2.7 startup script. Valve added `-sfm_startup_script` for this purpose in SFM 0.9.8.3 ([release notes](https://store.steampowered.com/news/posts/?appgroupname=Source+Filmmaker&appids=1840&enddate=1408130039&feed=steam_updates%2F1000)).
+2. Python loads the x86 DLL with `ctypes.CDLL` and calls the exported C ABI.
+3. The Bridge creates a local named pipe, launches the x64 Worker as a separate process, and waits for the Worker connection.
+4. Python sends `PING` and an `ECHO` test request through the Bridge; the Worker replies `PONG` and the echoed payload.
+5. Python sends `QUIT`; the Worker replies `BYE` and exits. The Bridge waits for shutdown and closes its handles.
+
+This path was run inside the installed SFM application using `-sfm_startup_script`; the result log reported CPython 2.7.5, 32-bit, successful `PING`/`ECHO`, and clean shutdown. The built Bridge is x86 and Worker is x64. This does not yet submit rendered frames or invoke PFM processing.
+
+## Job workflow (proposed; not implemented)
 
 1. SFM starts the ModernSFM Python orchestration script.
 2. Python initializes the Bridge; the Bridge starts or connects to the x64 Worker.
@@ -68,18 +80,25 @@ The x64 Worker must never be loaded into SFM's x86 process. The Bridge is not th
 
 The frame-ready decision and batch-submission close signal are **proposed but unverified**. A special SFM hook is not assumed. Do not treat file existence alone as readiness; Worker validation remains defensive and cannot by itself prove SFM has closed a file or will not replace it. The exact Python-side readiness and normal-end detection mechanism must be tested before live integration.
 
-## Python 2.7 native binding
+## Python 2.7 native binding (prototype implemented)
 
-Two approaches are under consideration:
+The prototype uses `ctypes.CDLL` with a narrow `__cdecl` C ABI. On the MSVC x86 build the C symbols are underscore-decorated, and the Python helper resolves either decorated or undecorated names. The exported functions are `msfm_abi_version`, `msfm_start`, `msfm_request`, `msfm_shutdown`, and `msfm_last_error`. Worker paths are passed as wide strings; message and response payloads are byte strings with explicit lengths.
 
-1. **Proposed initial option: `ctypes` over a narrow exported C ABI.** This avoids building a Python-specific extension module and can expose a small set of opaque handles, status values, and UTF-8/UTF-16 path arguments. It is preferred only if an end-to-end test in this exact SFM installation proves that its embedded x86 Python 2.7 can load the x86 Bridge DLL safely.
-2. **Alternative: CPython 2.7 x86 extension module.** This uses Python's extension API and may provide a more natural Python interface, but couples the binding to the exact interpreter ABI, headers, compiler/runtime choices, and packaging.
+The script and Bridge have passed a live load/call/shutdown run inside this SFM installation's embedded Python 2.7. This verifies this specific build and basic path; it does not yet test unload/reload, Unicode paths, error recovery, or use during an active SFM render. A CPython extension remains an alternative only if future needs exceed this C ABI.
 
-Compatibility is not assumed. Verify interpreter version/bitness, DLL search behavior, calling convention, exported symbol ABI, string encoding, error propagation, and unload/shutdown behavior inside SFM. Keep the public Bridge boundary narrow and versionable; do not expose C++ classes or STL types across the ABI. No binding has been selected as final.
+### IPC wire protocol
+
+- Bridge owns a unique local named pipe and starts the Worker with its pipe name. Remote clients are rejected.
+- Each message is a four-byte little-endian unsigned payload length followed by up to 64 KiB of bytes. Reads and writes loop until the full frame transfers; Bridge I/O and connection waits are overlapped and bounded by caller-specified timeouts.
+- Test commands are `PING` → `PONG`, `ECHO <bytes>` → echoed bytes, and `QUIT` → `BYE` followed by process exit. Unknown commands return an error text response.
+- The Bridge returns integer result codes and a diagnostic string through `msfm_last_error`: 0 success, 1 invalid argument, 2 invalid state, 3 Win32 error, 4 timeout, 5 protocol error, 6 insufficient response buffer, 7 unexpected Worker exit, and 8 internal error. On pipe failures or timeout, it closes the session and terminates a still-running Worker so the stream cannot be reused out of sync.
+- No pixel data is sent through IPC. The Bridge passes only control messages and later will pass paths/configuration.
+
+The C ABI, response-capacity behavior, timeout and error-recovery cases, and protocol version negotiation need further hardening before this prototype is treated as a production interface.
 
 ## Render completion and input readiness
 
-**Confirmed:** the installed Python script search and inspection of the legacy frontend did not establish a documented SFM render-finished callback. The legacy frontend polls UI dialogs and expected output counts, but these are unverified heuristics. No live SFM test has established how Python can tell that a particular Beauty/Depth pair is fully written.
+**Confirmed:** the installed Python script search and inspection of the legacy frontend did not establish a documented SFM render-finished callback. The legacy frontend polls UI dialogs and expected output counts, but these are unverified heuristics. The live SFM smoke test did not render a frame and therefore did not test per-frame file readiness.
 
 **Proposed:** Python owns render sequencing and sends one `frame_ready` notification per pair after its readiness condition is met. No special callback or engine hook is added unless investigation proves one is needed. The Worker validates the pair and reports processing state, but does not infer readiness from existence alone.
 
@@ -101,11 +120,9 @@ Required investigation:
 - Record the observed completion contract and a repeatable pass/fail procedure before choosing the orchestration signal.
 - Use the legacy prototype only to identify prior intended controls and failure reports; do not copy its dialog-close sentinel as a success signal.
 
-## Native binding compatibility investigation
+## Native binding verification status
 
-**Preliminary finding:** the bundled interpreter at `game/sdktools/python/2.7/win32/python.exe` reports CPython 2.7.5, 32-bit, and successfully imports `ctypes` and calls `kernel32.GetCurrentProcessId`. The legacy frontend also imports `ctypes` and declares Win32 API signatures. This confirms a 32-bit Python 2.7 runtime and basic `ctypes` availability in the bundled interpreter; it does **not** prove behavior inside SFM's live embedded interpreter, nor does it test loading a ModernSFM Bridge DLL, its ABI/calling convention, DLL search path, or shutdown behavior. Treat `ctypes` as the preferred candidate, not yet selected.
-
-Before Bridge implementation, run a tiny x86 probe DLL with a version function and one integer/string call from a script executed in SFM's own Python console. Verify architecture, calling convention, Unicode path round-trip, error return, SFM responsiveness, and clean process shutdown. Do not use the failed legacy frontend as the probe.
+The SFM startup-script smoke test verified the installed embedded CPython 2.7.5 process can load this x86 Bridge with `ctypes.CDLL`, call the C ABI, pass a worker path, exchange messages, and shut down the x64 child without freezing or crashing SFM. A separate run through the bundled 32-bit `python.exe` also passed. Unicode paths, repeated load/unload, IPC failure recovery, and render-time behavior remain untested.
 
 Until then, do not submit files based solely on existence or a fixed delay. Regardless of the handoff signal, the Worker must reject malformed, truncated, mismatched, or unreadable inputs without modifying or deleting them.
 
@@ -306,20 +323,19 @@ Future batch and coordination logs should add frame number and SFM instance ID. 
 
 Detailed sequencing and pass/fail gates are tracked in [ROADMAP.md](ROADMAP.md). The roadmap is aspirational beyond the single-frame foundation; future phases require their own design review and do not imply approval to implement them.
 
-## Prioritized investigations before implementation
+## Next implementation work
 
 1. Expand the one-frame sample set across scenes and render settings; the current pair's binary structure, range, and row orientation are documented, while color characteristics and depth semantics remain unresolved.
-2. Verify Python's per-frame Beauty/Depth readiness condition and its way to close submissions on normal completion, cancellation, or failure. Do not add an SFM hook unless experiments show it is necessary.
-3. Test native binding feasibility inside SFM's embedded Python 2.7; compare `ctypes` against a CPython extension and select one based on evidence.
+2. Test Python's per-frame Beauty/Depth readiness condition and its way to close submissions on normal completion, cancellation, or failure. Do not add an SFM hook unless experiments show it is necessary.
+3. Harden the Bridge ABI and Named Pipe failure/timeout behavior through automated cases, and add protocol version negotiation.
 4. Finalize the EXR schema and precision/compression/metadata after input semantics are known.
-5. Specify the Named Pipe framing/protocol, Bridge API, Worker state transitions, deadlines, cancellation, and recovery.
+5. Extend the current test-command protocol to the proposed job/frame request messages and Worker batch state.
 6. Set memory-budget defaults and cleanup policy using actual resolution/working-set measurements; define failure-safe publication and source retention.
 7. Define reproducible diagnostic logs and packaging/version/restore strategy for local installation.
 
 ## Assumptions still requiring evidence
 
 - One SFM render produced a beauty/depth PFM pair with matching dimensions. Reliable pairing/completion behavior across exports and frames remains unverified.
-- The embedded SFM Python environment can load a separately built x86 Bridge through a supported binding mechanism.
 - Python can reliably identify completed Beauty/Depth pairs and distinguish normal submission close from cancellation or failure without an unnecessary SFM hook.
 - The Worker can locate and access the same paths visible to SFM, including Unicode/long paths where required.
 - Beauty and depth PFM semantics are sufficient for the proposed `raw-sfm`, `depth`, and processed `image-final` outputs.

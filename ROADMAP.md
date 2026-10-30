@@ -2,7 +2,7 @@
 
 ## Status and sequencing
 
-The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains fixed: SFM Python x86 → Bridge DLL x86 → separate Worker x64. The standalone synthetic-data subset of Phase 1 is implemented and verified, and one real frame pair has passed the Worker round-trip. Phase 0 semantics and integration questions remain open; see [Phase 0 Evidence](PHASE0_EVIDENCE.md). Bridge and SFM integration have not started.
+The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains fixed: SFM Python x86 → Bridge DLL x86 → separate Worker x64. The standalone PFM/EXR Worker milestone is complete. A minimal Named Pipe command round trip through an x86 Bridge and x64 Worker has also passed inside SFM's embedded Python 2.7. PFM readiness, SFM render integration, and batch processing remain open; see [Phase 0 Evidence](PHASE0_EVIDENCE.md).
 
 ## Phase 0 — Evidence and architecture validation
 
@@ -24,7 +24,9 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 
 **Investigation update (2026-10-30):** The installed bundled Python executable reports CPython 2.7.5, 32-bit, imports `ctypes`, and can call a basic Win32 API. This is only a bundled-runtime baseline, not an in-SFM Bridge load test. Inspection of the non-working legacy frontend confirms it polls a Qt layoff progress dialog and/or expected output counts and writes a sentinel; neither has been verified against cancellation, failure, or file flushing. No reliable per-frame readiness or batch-end contract has been established. The proposed model is per-frame `frame_ready` notifications from Python, with no special hook assumed, and an explicit end-of-submissions outcome. See [Architecture](ARCHITECTURE.md) for the proposed protocol and required investigation.
 
-**Gate:** implementation starts only after the architecture questions that affect component boundaries and input/output correctness are resolved. Unknown color/depth semantics may remain explicitly marked unknown rather than guessed.
+**Later integration check:** the x86 Bridge and x64 Worker have since completed a PING/ECHO/QUIT round trip when launched by SFM's own Python 2.7 startup-script facility. This verifies the native process boundary, not frame readiness or render completion.
+
+**Gate:** render and PFM processing may use the agreed opaque-value path while color/depth semantics remain explicitly unknown; per-frame readiness must still be verified before streaming.
 
 ## Phase 1 — Standalone data-format proof
 
@@ -43,12 +45,13 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 
 **Goal:** validate process boundaries and IPC independently of SFM rendering.
 
-- Implement only after Phase 0 design gate.
-- Build the x86 Bridge and x64 Worker as separate binaries.
-- Exercise initialize, submit, status/progress, cancellation, errors, shutdown, Worker exit, protocol mismatch, and timeout behavior through IPC.
-- Verify one active job and control-message-only IPC; Worker reads image files directly.
+**Status:** minimal command/lifecycle slice implemented. `ctypes.CDLL` in live SFM Python 2.7 loaded the 32-bit Bridge, launched the 64-bit Worker, completed `PING` and `ECHO`, and shut the Worker down cleanly. The same smoke script passed in the bundled x86 Python 2.7.5 executable. Existing PFM Worker tests still pass. Full IPC failure, timeout, cancellation, and protocol negotiation coverage remain outstanding.
+
+- Finish the implemented minimal IPC slice with automated failure and timeout coverage before expanding the protocol.
+- Automate initialization, repeated start, malformed/oversized requests, insufficient response buffers, Worker exit, protocol mismatch, timeouts, and shutdown error cases.
+- Keep one synchronous request at a time and control-message-only IPC; the Worker reads files directly when file jobs are added.
 - Use a one-frame batch to validate the proposed `begin_batch` → `frame_ready` → frame status → end-of-submissions contract, including missing/invalid input handling.
-- Add separate logs and version/protocol diagnostics.
+- Add protocol version negotiation and persistent per-component diagnostics.
 
 **Gate:** all protocol and failure scenarios return bounded structured outcomes; the Worker is never loaded into the x86 process and no full image buffers cross IPC.
 
@@ -56,7 +59,9 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 
 **Goal:** complete one SFM render-to-EXR operation through embedded Python and the Bridge.
 
-- Load and call the x86 Bridge using the selected binding in SFM's actual Python environment.
+**Status:** Bridge loading and Worker round trip are verified inside SFM. No SFM render or PFM-to-EXR job has yet been triggered through this integration.
+
+- Reuse the live-verified x86 Bridge binding from SFM's actual Python environment.
 - Have Python submit a frame only after its readiness condition is met; the condition must be experimentally verified, and a special SFM hook is not assumed.
 - Process a real beauty/depth pair and compare source and EXR values.
 - Publish through a temporary output followed by reopen/validation and atomic/failure-safe final publication where supported.
@@ -137,7 +142,7 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 
 1. Python's per-frame PFM readiness condition and normal-end/cancel/failure detection have not been established; a special SFM hook is not assumed.
 2. Only one real beauty/depth PFM pair has been inspected; beauty color/depth semantics remain unknown.
-3. A custom x86 Bridge DLL has not been loaded from SFM's live embedded Python 2.7; only basic `ctypes` availability in the bundled 32-bit Python executable is confirmed.
+3. Bridge error recovery, Unicode paths, repeated load/unload, and behavior during an active SFM render remain untested.
 4. The initial EXR schema and transform metadata remain proposals.
 5. Multi-instance rendering may require patching `launcher.dll`; safety, version stability, and necessity are unverified.
 6. Community Multi-Render reports ghost frames at frame-range boundaries and resource pressure; the underlying cause and project-specific frequency need independent testing.
