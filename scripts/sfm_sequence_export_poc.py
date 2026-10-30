@@ -1,12 +1,13 @@
 # Run in SFM with:
 # sfm.exe -game usermod -sfm_startup_script <this file> -console -condebug
 #
-# Small native-sequence-export proof. Uses a disposable copy of session4.dmx,
+# Small native-sequence-export proof. Uses a disposable copy of a selected DMX,
 # exports frames 0..2 at 640x360 to PFM + depth, then sends validated pairs
 # through the existing x86 Bridge to x64 Worker. It never saves the session or
 # deletes the source PFM files.
 
 import ctypes
+import json
 import hashlib
 import os
 import shutil
@@ -22,9 +23,29 @@ except ImportError:
 import sfmApp
 
 
-ROOT = r"D:\WorkFlow\Programming\Projects\ModernSFM"
-SFM_GAME = r"D:\SteamLibrary\steamapps\common\SourceFilmmaker\game"
-SOURCE_SESSION = os.path.join(SFM_GAME, "usermod", "elements", "sessions", "session4.dmx")
+_config_path = os.environ.get("MODERNSFM_CONFIG")
+if not _config_path and os.environ.get("APPDATA"):
+    _config_path = os.path.join(os.environ["APPDATA"], "ModernSFM", "config.json")
+_config = {}
+if _config_path and os.path.isfile(_config_path):
+    with open(_config_path, "rb") as _config_stream:
+        _config = json.load(_config_stream)
+_script_file = globals().get("__file__", "")
+ROOT = (os.environ.get("MODERNSFM_ROOT") or _config.get("project_root") or
+        (os.path.dirname(os.path.dirname(os.path.abspath(_script_file))) if _script_file else ""))
+SFM_GAME = os.environ.get("MODERNSFM_SFM_GAME") or _config.get("sfm_game")
+if not ROOT or not SFM_GAME:
+    raise RuntimeError("Run setup.ps1 or set MODERNSFM_ROOT and MODERNSFM_SFM_GAME")
+SESSIONS_DIR = os.path.join(SFM_GAME, "usermod", "elements", "sessions")
+SOURCE_SESSION = os.environ.get("MODERNSFM_POC_SESSION")
+if not SOURCE_SESSION:
+    _sessions = sorted(os.path.join(SESSIONS_DIR, name) for name in os.listdir(SESSIONS_DIR)
+                       if name.lower().endswith(".dmx") and not name.lower().startswith("_modern_sfm_"))
+    if not _sessions:
+        raise RuntimeError("No SFM sessions found in %s; set MODERNSFM_POC_SESSION" % SESSIONS_DIR)
+    SOURCE_SESSION = _sessions[0]
+if not os.path.isfile(SOURCE_SESSION):
+    raise RuntimeError("POC session does not exist: %s" % SOURCE_SESSION)
 SESSION_COPY = os.path.join(SFM_GAME, "usermod", "elements", "sessions",
                             "_modern_sfm_poc_copy.dmx")
 BRIDGE_DLL = os.path.join(ROOT, "build", "x86", "Release", "modern_sfm_bridge.dll")

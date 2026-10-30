@@ -1,3 +1,5 @@
 /build/
 /vcpkg_installed/
 *.exr
+__pycache__/
+*.py[cod]

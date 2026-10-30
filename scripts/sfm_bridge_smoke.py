@@ -14,8 +14,18 @@ SCRIPT_FILE = globals().get("__file__", "")
 if SCRIPT_FILE:
     REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(SCRIPT_FILE)))
 else:
-    REPO_DIR = os.environ.get("MODERNSFM_ROOT",
-                              r"D:\WorkFlow\Programming\Projects\ModernSFM")
+    _config_path = os.environ.get("MODERNSFM_CONFIG")
+    if not _config_path and os.environ.get("APPDATA"):
+        _config_path = os.path.join(os.environ["APPDATA"], "ModernSFM", "config.json")
+    _config = {}
+    if _config_path and os.path.isfile(_config_path):
+        import json
+        with open(_config_path, "rb") as _config_stream:
+            _config = json.load(_config_stream)
+    REPO_DIR = (os.environ.get("MODERNSFM_ROOT") or
+                _config.get("project_root"))
+    if not REPO_DIR:
+        raise RuntimeError("Set MODERNSFM_ROOT or install ModernSFM with setup.ps1")
 RESULT_FILE = os.path.join(REPO_DIR, "build", "sfm_bridge_smoke_result.txt")
 
 

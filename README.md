@@ -35,7 +35,17 @@ cmake --build build/x86 --config Release
 & "<SFM-root>/game/sdktools/python/2.7/win32/python.exe" scripts/sfm_bridge_smoke.py
 ```
 
-To open the Render Job window in SFM, launch `sfm.exe -game usermod -sfm_startup_script "<ModernSFM-root>/scripts/sfm_render_job_panel.py" -condebug -console`. Open a session through SFM's initial chooser; the ModernSFM window then enables Start. Select the session to render in ModernSFM; each job writes to a new output subfolder and opens a disposable copy. This prototype supports at most three frames at 1280x720.
+## Install the SFM launcher
+
+After building the x86 Bridge and x64 Worker, install the Scripts-menu launcher for the current Windows user. Pass the path to the SFM `game` directory (the directory containing `sfm.exe`):
+
+```powershell
+.\setup.ps1 -SfmGamePath "C:\Program Files (x86)\Steam\steamapps\common\SourceFilmmaker\game"
+```
+
+The setup script copies the launcher into `usermod/scripts/sfm/mainmenu` and writes this machine's project/SFM paths to `%APPDATA%\ModernSFM\config.json`. SFM's Python reads those paths at runtime; they are not baked into the tracked scripts. `config.example.json` shows the two settings. If SFM is installed in another Steam library, pass that installation's `game` directory. You can also set `MODERNSFM_CONFIG` to use a config file in another location.
+
+Restart SFM, load a session, then choose **Scripts → modern_sfm_render_job**. The panel enables Start when SFM has a document open. Select the session to render in ModernSFM; each job writes to a new output subfolder and opens a disposable copy. This prototype supports at most three frames at 1280x720. For direct `-sfm_startup_script` use, set `MODERNSFM_ROOT` and `MODERNSFM_SFM_GAME` in the environment before launching SFM.
 
 The independently tested native-export proof remains available as `scripts/sfm_sequence_export_poc.py`; it writes under `build/sfm_sequence_poc` and records its result in `build/sfm_sequence_export_poc.txt`.
 

@@ -2,6 +2,7 @@
 # Run with MODERNSFM_SEQUENCE_DIR set, or edit DEFAULT_SEQUENCE_DIR.
 
 import ctypes
+import json
 import os
 import struct
 import sys
@@ -9,9 +10,19 @@ import time
 import traceback
 
 
-ROOT = r"D:\WorkFlow\Programming\Projects\ModernSFM"
-DEFAULT_SEQUENCE_DIR = os.path.join(ROOT, "build", "sfm_sequence_poc",
-                                    "render_20261030_215239")
+_config_path = os.environ.get("MODERNSFM_CONFIG")
+if not _config_path and os.environ.get("APPDATA"):
+    _config_path = os.path.join(os.environ["APPDATA"], "ModernSFM", "config.json")
+_config = {}
+if _config_path and os.path.isfile(_config_path):
+    with open(_config_path, "rb") as _config_stream:
+        _config = json.load(_config_stream)
+_script_file = globals().get("__file__", "")
+ROOT = (os.environ.get("MODERNSFM_ROOT") or _config.get("project_root") or
+        (os.path.dirname(os.path.dirname(os.path.abspath(_script_file))) if _script_file else ""))
+if not ROOT:
+    raise RuntimeError("Run setup.ps1 or set MODERNSFM_ROOT")
+DEFAULT_SEQUENCE_DIR = os.path.join(ROOT, "build", "sfm_sequence_poc")
 SEQUENCE_DIR = os.environ.get("MODERNSFM_SEQUENCE_DIR", DEFAULT_SEQUENCE_DIR)
 BRIDGE_DLL = os.path.join(ROOT, "build", "x86", "Release", "modern_sfm_bridge.dll")
 WORKER_EXE = os.path.join(ROOT, "build", "x64", "Release", "modern_sfm_worker.exe")

@@ -24,8 +24,33 @@ except ImportError:
     from PySide import shiboken
 import sfmApp
 
-ROOT = os.environ.get("MODERNSFM_ROOT",
-                      r"D:\WorkFlow\Programming\Projects\ModernSFM")
+def _install_config_path():
+    configured = os.environ.get("MODERNSFM_CONFIG")
+    if configured:
+        return configured
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return os.path.join(appdata, "ModernSFM", "config.json")
+    return None
+
+
+def _read_install_config():
+    path = _install_config_path()
+    if path and os.path.isfile(path):
+        with open(path, "rb") as stream:
+            return json.load(stream)
+    return {}
+
+
+_INSTALL_CONFIG = _read_install_config()
+_SCRIPT_FILE = globals().get("__file__", "")
+_SCRIPT_ROOT = (os.path.dirname(os.path.dirname(os.path.abspath(_SCRIPT_FILE)))
+                if _SCRIPT_FILE else "")
+ROOT = (os.environ.get("MODERNSFM_ROOT") or
+        _INSTALL_CONFIG.get("project_root") or _SCRIPT_ROOT)
+if not ROOT:
+    raise RuntimeError("ModernSFM project path is not configured. Run setup.ps1 or set MODERNSFM_ROOT.")
+ROOT = os.path.abspath(ROOT)
 SCRIPT_DIR = os.path.join(ROOT, "scripts")
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
@@ -33,7 +58,11 @@ from render_job_state import JobStateMachine, recover_interrupted_jobs, write_ma
 from render_job_processing import ExrProcessingThread
 
 
-SFM_GAME = r"D:\SteamLibrary\steamapps\common\SourceFilmmaker\game"
+SFM_GAME = (os.environ.get("MODERNSFM_SFM_GAME") or
+            _INSTALL_CONFIG.get("sfm_game"))
+if not SFM_GAME:
+    raise RuntimeError("SFM game path is not configured. Run setup.ps1 or set MODERNSFM_SFM_GAME.")
+SFM_GAME = os.path.abspath(SFM_GAME)
 SESSIONS_DIR = os.path.join(SFM_GAME, "usermod", "elements", "sessions")
 BRIDGE_DLL = os.path.join(ROOT, "build", "x86", "Release", "modern_sfm_bridge.dll")
 WORKER_EXE = os.path.join(ROOT, "build", "x64", "Release", "modern_sfm_worker.exe")

@@ -87,6 +87,10 @@ An earlier Start attempt opened a disposable copy from the external output folde
 
 The interface fixes the Worker count at one because the current Bridge API manages one Worker. The memory budget is passed through `PACK`. The render range, output, Progressive Refinement, and depth options are applied to SFM; memory is a Worker option. The native progress window was not reliably observed, so the panel shows pair-count and validation status rather than claiming verified render progress or cancellation. Resolution remains fixed at 1280x720 because the 640x360 attempt produced mismatched Beauty/Depth dimensions.
 
+### Installation paths and per-user configuration
+
+The Render Job panel resolves its project root and SFM `game` directory from `%APPDATA%\ModernSFM\config.json` (or `MODERNSFM_CONFIG`). `setup.ps1 -SfmGamePath <game-directory>` writes that per-user config and copies the Scripts-menu launcher into the selected installation's `usermod/scripts/sfm/mainmenu`. Environment overrides `MODERNSFM_ROOT` and `MODERNSFM_SFM_GAME` remain available for development. Runtime scripts do not contain a developer-specific Steam or repository path. Users with SFM in another Steam library pass that installation's `game` directory to setup.
+
 ## Worker batch state machine (proposed; not implemented)
 
 1. SFM runs the ModernSFM Python orchestration script.
