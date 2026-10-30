@@ -4,7 +4,21 @@ ModernSFM is a planned rendering and post-processing pipeline for Source Filmmak
 
 ## Project status
 
-This repository currently contains architecture and roadmap documentation only. No Bridge, Worker, SFM integration, or processing features have been implemented. The first planned work is evidence gathering: inspect real SFM PFM files, establish render completion behavior, and verify the Python-to-Bridge binding in SFM's embedded Python 2.7 environment.
+The repository contains the architecture documents and a first standalone x64 Worker milestone. The Worker strictly parses a paired RGB beauty PFM and single-channel depth PFM, writes a multilayer FLOAT OpenEXR, reopens it, and checks channel types, dimensions, and sample values. The `image-final` layer is currently an identity copy of `raw-sfm`; no color-space interpretation is asserted. Source PFMs are preserved.
+
+This milestone has only been verified with synthetic fixtures. It does not include the x86 Bridge DLL, Python orchestration, SFM integration, color transforms, effects, batching, or cleanup. Real SFM PFM compatibility and color/depth semantics remain unverified.
+
+## Build and verify
+
+Use Visual Studio 2022 or newer with the x64 C++ workload, CMake, and vcpkg. The project manifest installs OpenEXR.
+
+```powershell
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=<vcpkg-root>/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
+```
+
+The standalone command is `modern_sfm_worker pack --beauty <RGB.pfm> --depth <Z.pfm> --output <result.exr> [--max-memory-mib <MiB>]`. Existing output files are never overwritten.
 
 ## Architecture
 

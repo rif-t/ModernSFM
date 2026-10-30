@@ -2,7 +2,7 @@
 
 ## Status and sequencing
 
-This roadmap describes proposed phases. The repository currently contains documentation only. No feature in this roadmap should be described as implemented until code exists and its verification gate passes. The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains fixed: SFM Python x86 → Bridge DLL x86 → separate Worker x64.
+The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains fixed: SFM Python x86 → Bridge DLL x86 → separate Worker x64. The standalone synthetic-data subset of Phase 1 is implemented and verified; Phase 0 evidence gathering and all integration phases remain pending.
 
 ## Phase 0 — Evidence and architecture validation
 
@@ -24,12 +24,14 @@ This roadmap describes proposed phases. The repository currently contains docume
 
 **Goal:** verify file-format handling without coupling it to SFM.
 
+**Status:** accepted synthetic-data subset implemented and verified. The x64 standalone Worker reads paired RGB (`PF`) beauty and single-channel (`Pf`) depth PFM inputs, writes FLOAT `raw-sfm`, `depth`, and `image-final` EXR channels, reopens the file, and checks dimensions, channel types, and pixel values. `image-final` is an identity copy of `raw-sfm`. Synthetic smoke tests cover valid inputs, truncated payload rejection, dimension mismatch, non-finite samples, memory-budget acceptance and rejection, output collision, and PFM retention. No real SFM PFM pair has been tested.
+
 - Define synthetic PFM fixtures including valid RGB/grayscale and malformed headers/payloads.
 - Specify strict parser behavior for non-finite values, endian/scale, orientation, truncation, dimensions, and overflow.
 - Write a multilayer EXR from synthetic known values using the proposed schema and FLOAT channels.
 - Reopen and validate dimensions, channels, layer organization, and values; test `raw-sfm` preservation.
 
-**Gate:** the parser deterministically accepts valid fixtures, rejects invalid fixtures safely, and EXR round-trip checks pass against expected values. No source PFMs are deleted in this phase.
+**Gate:** passed for the accepted synthetic-data subset. No source PFMs are deleted in this phase.
 
 ## Phase 2 — Single-frame x86 Bridge to x64 Worker
 
