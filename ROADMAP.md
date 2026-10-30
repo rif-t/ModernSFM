@@ -45,9 +45,9 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 
 **Goal:** validate process boundaries and IPC independently of SFM rendering.
 
-**Status:** minimal command/lifecycle slice implemented. `ctypes.CDLL` in live SFM Python 2.7 loaded the 32-bit Bridge, launched the 64-bit Worker, completed `PING` and `ECHO`, and shut the Worker down cleanly. The same smoke script passed in the bundled x86 Python 2.7.5 executable. Existing PFM Worker tests still pass. Full IPC failure, timeout, cancellation, and protocol negotiation coverage remain outstanding.
+**Status:** single-pair `PACK` request implemented over the x86 Bridge to x64 Worker pipe. Both bundled CPython 2.7.5 x86 and live SFM Python 2.7 passed `PING`, `ECHO`, processing of the existing 3840x2160 beauty/depth pair into a validated FLOAT multilayer EXR, and clean shutdown. Worker reads files directly; source PFMs were retained. Full IPC failure, timeout, cancellation, and protocol negotiation coverage remain outstanding.
 
-- Finish the implemented minimal IPC slice with automated failure and timeout coverage before expanding the protocol.
+- Add automated malformed `PACK` payload, processing failure, and timeout coverage; the current protocol has defensive parsing but no complete automated Bridge-level failure suite.
 - Automate initialization, repeated start, malformed/oversized requests, insufficient response buffers, Worker exit, protocol mismatch, timeouts, and shutdown error cases.
 - Keep one synchronous request at a time and control-message-only IPC; the Worker reads files directly when file jobs are added.
 - Use a one-frame batch to validate the proposed `begin_batch` → `frame_ready` → frame status → end-of-submissions contract, including missing/invalid input handling.
@@ -59,11 +59,11 @@ The three-component architecture in [ARCHITECTURE.md](ARCHITECTURE.md) remains f
 
 **Goal:** complete one SFM render-to-EXR operation through embedded Python and the Bridge.
 
-**Status:** Bridge loading and Worker round trip are verified inside SFM. No SFM render or PFM-to-EXR job has yet been triggered through this integration.
+**Status:** real-file PFM-to-EXR processing through the Bridge is verified inside SFM using an already-rendered pair. The integration has not initiated an SFM render, and no reliable per-frame readiness or render-completion signal has been verified.
 
 - Reuse the live-verified x86 Bridge binding from SFM's actual Python environment.
-- Have Python submit a frame only after its readiness condition is met; the condition must be experimentally verified, and a special SFM hook is not assumed.
-- Process a real beauty/depth pair and compare source and EXR values.
+- Have Python submit newly rendered frames only after its readiness condition is experimentally verified; a special SFM hook is not assumed.
+- Extend the real-pair smoke test to verify input and EXR pixel values from the Bridge path, beyond the Worker’s existing reopen-and-compare validation.
 - Publish through a temporary output followed by reopen/validation and atomic/failure-safe final publication where supported.
 - Add configurable source retention; delete inputs only after validated publication.
 

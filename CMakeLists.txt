@@ -19,6 +19,7 @@ if(MODERNSFM_BUILD_WORKER)
         src/worker/main.cpp
         src/worker/pfm.cpp
         src/worker/exr_pack.cpp
+        src/worker/pack_job.cpp
         src/worker/pipe_worker.cpp
     )
     target_include_directories(modern_sfm_worker PRIVATE include src/worker)

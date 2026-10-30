@@ -6,7 +6,7 @@ ModernSFM is a rendering and post-processing prototype for Source Filmmaker. SFM
 
 The repository contains a standalone x64 Worker and a first x86 Bridge prototype. The Worker strictly parses a paired RGB beauty PFM and single-channel depth PFM, writes a multilayer FLOAT OpenEXR, reopens it, and checks channel types, dimensions, and sample values. It keeps the top-to-bottom row order observed in an SFM render. The `image-final` layer is currently an identity copy of `raw-sfm`; no color-space interpretation is asserted. Source PFMs are preserved.
 
-The Worker has passed synthetic tests and processed one real SFM frame pair. The x86 Bridge starts the x64 Worker through a local named pipe and forwards a small test protocol. The Python 2.7 smoke script has passed under both the bundled 32-bit interpreter and the live SFM embedded interpreter. Render orchestration, PFM processing through the Bridge, color transforms, effects, batching, and cleanup are not implemented yet. Color and depth semantics remain unverified.
+The Worker has passed synthetic tests and processed one real SFM frame pair. The x86 Bridge starts the x64 Worker through a local named pipe and forwards a single-pair `PACK` request. The Python 2.7 smoke script passed under both the bundled 32-bit interpreter and live SFM embedded interpreter, producing a validated 3840x2160 FLOAT multilayer EXR from the real sample pair. Source PFMs were retained. SFM render orchestration, color transforms, effects, batching, and cleanup are not implemented. Color and depth semantics remain unverified.
 
 ## Build and verify
 
@@ -41,7 +41,7 @@ SFM Python (x86 / Python 2.7)
         -> ModernSFM Worker (x64 process)
 ```
 
-Python orchestrates the workflow. The Bridge owns Worker lifecycle and local IPC. The x64 Worker performs PFM parsing, image processing, and EXR generation. Image buffers stay out of Python, the Bridge, and IPC. The current Bridge protocol supports only `PING`, `ECHO`, and graceful `QUIT`; render jobs and batch states are not implemented.
+Python orchestrates the workflow. The Bridge owns Worker lifecycle and local IPC. The x64 Worker performs PFM parsing, image processing, and EXR generation. Image buffers stay out of Python, the Bridge, and IPC. The Bridge protocol supports `PING`, `ECHO`, `PACK`, and graceful `QUIT`. `PACK` sends UTF-8 file paths and a memory limit; the Worker reads the PFM files directly, validates and writes the EXR, and returns a typed result. Batch states and SFM render sequencing are not implemented.
 
 ## Documentation
 

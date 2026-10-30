@@ -8,7 +8,7 @@ This document records implemented behavior and the remaining architecture. Terms
 - **Proposed** means a recommended design that still needs verification or approval.
 - **Unresolved** means evidence or a decision is still required.
 
-The x64 PFM-to-EXR Worker is implemented. A minimal x86 Bridge-to-x64 Worker Named Pipe prototype is also implemented and has passed a live SFM embedded-Python smoke run. Rendering handoff, batch processing, and PFM-to-EXR calls through the Bridge remain unimplemented.
+The x64 PFM-to-EXR Worker and a minimal x86 Bridge-to-x64 Worker Named Pipe pipeline are implemented. The live SFM embedded-Python smoke run processed the real 3840x2160 sample PFM pair through the Bridge and Worker into a validated multilayer FLOAT EXR. Source PFMs remained in place. SFM rendering handoff and batch processing remain unimplemented.
 
 ## Purpose and scope
 
@@ -63,7 +63,9 @@ The current vertical slice is a transport/lifecycle proof only:
 4. Python sends `PING` and an `ECHO` test request through the Bridge; the Worker replies `PONG` and the echoed payload.
 5. Python sends `QUIT`; the Worker replies `BYE` and exits. The Bridge waits for shutdown and closes its handles.
 
-This path was run inside the installed SFM application using `-sfm_startup_script`; the result log reported CPython 2.7.5, 32-bit, successful `PING`/`ECHO`, and clean shutdown. The built Bridge is x86 and Worker is x64. This does not yet submit rendered frames or invoke PFM processing.
+This path was run inside the installed SFM application using `-sfm_startup_script`; the result log reported CPython 2.7.5, 32-bit, successful `PING`/`ECHO`, a real-pair `PACK` result, and clean shutdown. The built Bridge is x86 and Worker is x64. `PACK` uses a 24-byte little-endian header (`PACK`, three UTF-8 path byte lengths, and a uint64 memory limit in MiB), followed by the beauty, depth, and output paths. The Worker rejects malformed lengths, oversized/empty paths, embedded NULs, and zero memory limits. Its response contains `RSLT`, a uint32 status, a uint32 UTF-8 message length, and the result or error message. Job-level errors are returned as result statuses while keeping the pipe available. The Worker reads source files directly, writes and validates EXR, and retains the PFM inputs.
+
+The sample integration run produced `build/test000240_bridge_sfm_<sfm-pid>.exr` (3840x2160, FLOAT, ZIP; 108,666,892 bytes). The same Python 2.7-compatible script also passed through the bundled 32-bit interpreter. The SFM smoke test checks the response, output existence/nonzero size, and source-file retention. The test does not verify SFM render readiness or batch completion because it operates on an already-existing pair.
 
 ## Job workflow (proposed; not implemented)
 
@@ -90,7 +92,7 @@ The script and Bridge have passed a live load/call/shutdown run inside this SFM 
 
 - Bridge owns a unique local named pipe and starts the Worker with its pipe name. Remote clients are rejected.
 - Each message is a four-byte little-endian unsigned payload length followed by up to 64 KiB of bytes. Reads and writes loop until the full frame transfers; Bridge I/O and connection waits are overlapped and bounded by caller-specified timeouts.
-- Test commands are `PING` → `PONG`, `ECHO <bytes>` → echoed bytes, and `QUIT` → `BYE` followed by process exit. Unknown commands return an error text response.
+- Test commands are `PING` → `PONG`, `ECHO <bytes>` → echoed bytes, `PACK` with the binary path/memory request and typed `RSLT` response described above, and `QUIT` → `BYE` followed by process exit. Unknown commands return an error text response.
 - The Bridge returns integer result codes and a diagnostic string through `msfm_last_error`: 0 success, 1 invalid argument, 2 invalid state, 3 Win32 error, 4 timeout, 5 protocol error, 6 insufficient response buffer, 7 unexpected Worker exit, and 8 internal error. On pipe failures or timeout, it closes the session and terminates a still-running Worker so the stream cannot be reused out of sync.
 - No pixel data is sent through IPC. The Bridge passes only control messages and later will pass paths/configuration.
 

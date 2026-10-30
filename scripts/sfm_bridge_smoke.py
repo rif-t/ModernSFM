@@ -5,6 +5,7 @@
 
 import ctypes
 import os
+import struct
 import sys
 import traceback
 
@@ -52,14 +53,40 @@ def _check(library, result, operation):
                            (operation, result, _last_error(library)))
 
 
-def _request(library, message):
+def _request(library, message, timeout_ms=5000):
     request = ctypes.create_string_buffer(message)
     response = ctypes.create_string_buffer(64 * 1024)
     response_size = ctypes.c_ulong(0)
     result = library.request(request, len(message), response, len(response),
-                             ctypes.byref(response_size), 5000)
+                             ctypes.byref(response_size), timeout_ms)
     _check(library, result, "Worker request %r" % message)
     return response.raw[:response_size.value]
+
+
+def _utf8_path(path):
+    if isinstance(path, unicode):
+        return path.encode("utf-8")
+    return path.decode("mbcs").encode("utf-8")
+
+
+def _pack(library, beauty, depth, output):
+    beauty_bytes = _utf8_path(beauty)
+    depth_bytes = _utf8_path(depth)
+    output_bytes = _utf8_path(output)
+    payload = struct.pack("<4sIIIQ", "PACK", len(beauty_bytes),
+                          len(depth_bytes), len(output_bytes), 4096)
+    payload += beauty_bytes + depth_bytes + output_bytes
+    response = _request(library, payload, 300000)
+    if len(response) < 12 or response[:4] != "RSLT":
+        raise RuntimeError("Malformed PACK result: %r" % response[:64])
+    status, message_size = struct.unpack("<II", response[4:12])
+    if message_size != len(response) - 12:
+        raise RuntimeError("PACK result message length is invalid")
+    message = response[12:].decode("utf-8", "replace")
+    _report("PACK status %d: %s" % (status, message))
+    if status != 0:
+        raise RuntimeError("Worker PACK failed: %s" % message)
+    return message
 
 
 def run(bridge_path=None, worker_path=None):
@@ -123,9 +150,23 @@ def run(bridge_path=None, worker_path=None):
         if echo_response != echo_message[5:]:
             raise RuntimeError("Unexpected ECHO response: %r" % echo_response)
 
+        beauty = os.path.join(repo_dir, "test000240.pfm")
+        depth = os.path.join(repo_dir, "test000240_depth.pfm")
+        output = os.path.join(repo_dir, "build", "test000240_bridge_sfm_%d.exr" % os.getpid())
+        if not os.path.isfile(beauty) or not os.path.isfile(depth):
+            raise RuntimeError("Expected real SFM PFM sample pair was not found")
+        _report("Processing real SFM PFM pair through Bridge -> Worker")
+        pack_message = _pack(bridge, beauty, depth, output)
+        if not os.path.isfile(output) or os.path.getsize(output) == 0:
+            raise RuntimeError("Worker reported success but output EXR is missing or empty")
+        if not os.path.isfile(beauty) or not os.path.isfile(depth):
+            raise RuntimeError("Worker unexpectedly removed a source PFM")
+        _report("Output EXR verified (%d bytes); both source PFMs remain." %
+                os.path.getsize(output))
+
         _check(bridge, bridge.shutdown(5000), "Bridge shutdown")
         started = False
-        _report("Worker shut down cleanly; Bridge IPC smoke test passed.")
+        _report("Worker shut down cleanly; Bridge and real-frame smoke test passed.")
     finally:
         if started:
             bridge.shutdown(1000)

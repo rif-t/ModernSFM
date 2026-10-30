@@ -1,12 +1,12 @@
 #include "modern_sfm/exr_pack.hpp"
 #include "modern_sfm/pfm.hpp"
+#include "modern_sfm/worker_jobs.hpp"
 #include "pipe_worker.hpp"
 
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
-#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -14,7 +14,6 @@
 namespace {
 
 constexpr std::uint64_t kDefaultMemoryBudgetMiB = 4096;
-constexpr std::uint64_t kMiB = 1024ULL * 1024ULL;
 
 void print_usage() {
     std::cerr << "Usage: modern_sfm_worker pack --beauty <RGB.pfm> --depth <Z.pfm> "
@@ -74,9 +73,6 @@ Arguments parse_arguments(int argc, char* argv[]) {
     if (!have_beauty || !have_depth || !have_output) {
         throw std::runtime_error("--beauty, --depth, and --output are required");
     }
-    if (arguments.max_memory_mib > std::numeric_limits<std::uint64_t>::max() / kMiB) {
-        throw std::runtime_error("--max-memory-mib is too large");
-    }
     return arguments;
 }
 
@@ -86,43 +82,8 @@ int run(int argc, char* argv[]) {
         return run_pipe_worker(std::wstring(narrow_pipe_name.begin(), narrow_pipe_name.end()));
     }
     const Arguments arguments = parse_arguments(argc, argv);
-    const std::uint64_t budget_bytes = arguments.max_memory_mib * kMiB;
-
-    modern_sfm::PfmImage beauty = modern_sfm::read_pfm(arguments.beauty, budget_bytes);
-    const std::uint64_t beauty_bytes = static_cast<std::uint64_t>(beauty.pixels.size()) * sizeof(float);
-    if (beauty_bytes >= budget_bytes) {
-        throw std::runtime_error("beauty input leaves no memory budget for depth input");
-    }
-    modern_sfm::PfmImage depth = modern_sfm::read_pfm(arguments.depth, budget_bytes - beauty_bytes);
-    if (beauty.channels != 3) {
-        throw std::runtime_error("beauty input must be RGB PFM (PF)");
-    }
-    if (depth.channels != 1) {
-        throw std::runtime_error("depth input must be single-channel PFM (Pf)");
-    }
-    if (beauty.width != depth.width || beauty.height != depth.height) {
-        throw std::runtime_error("beauty/depth PFM dimensions do not match");
-    }
-
-    const std::uint64_t pixel_count = static_cast<std::uint64_t>(beauty.width) * beauty.height;
-    if (pixel_count > std::numeric_limits<std::uint64_t>::max() / (4ULL * sizeof(float))) {
-        throw std::runtime_error("paired PFM working set size overflows");
-    }
-    const std::uint64_t image_bytes = pixel_count * 4ULL * sizeof(float);
-    const std::uint64_t row_bytes = static_cast<std::uint64_t>(beauty.width) * 7ULL * sizeof(float);
-    if (image_bytes > std::numeric_limits<std::uint64_t>::max() - row_bytes) {
-        throw std::runtime_error("paired PFM working set size overflows");
-    }
-    const std::uint64_t app_bytes = image_bytes + row_bytes;
-    if (app_bytes > budget_bytes) {
-        throw std::runtime_error("paired PFM working set exceeds configured memory budget");
-    }
-
-    modern_sfm::write_and_validate_exr(beauty, depth, arguments.output);
-    std::cout << "Validated EXR: " << arguments.output.string() << " ("
-              << beauty.width << "x" << beauty.height << ", FLOAT, ZIP)\n";
-    std::cout << "Channels: raw-sfm.R/G/B, depth.Z, image-final.R/G/B\n";
-    std::cout << "image-final is an identity copy; source PFMs were retained.\n";
+    std::cout << modern_sfm::pack_pfm_pair(arguments.beauty, arguments.depth,
+                                           arguments.output, arguments.max_memory_mib) << '\n';
     return 0;
 }
 
